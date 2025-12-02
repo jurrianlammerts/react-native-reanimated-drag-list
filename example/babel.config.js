@@ -7,10 +7,15 @@ const root = path.resolve(__dirname, '..');
 module.exports = function (api) {
   api.cache(true);
 
-  return getConfig(
+  const config = getConfig(
     {
       presets: ['babel-preset-expo'],
     },
     { root, pkg }
   );
+
+  return {
+    ...config,
+    plugins: [...(config.plugins || []), 'react-native-worklets/plugin'],
+  };
 };
