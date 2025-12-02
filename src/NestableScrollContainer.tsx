@@ -5,7 +5,6 @@ import Animated, {
   useAnimatedRef,
   useAnimatedScrollHandler,
   measure,
-  runOnUI,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { ScrollView } from 'react-native-gesture-handler';
@@ -75,12 +74,12 @@ export function NestableScrollContainer({
     (e: LayoutChangeEvent) => {
       containerHeight.value = e.nativeEvent.layout.height;
       // Measure the container's position on screen using reanimated
-      runOnUI(() => {
+      scheduleOnRN(() => {
         const measurement = measure(scrollViewRef);
         if (measurement) {
           containerTop.value = measurement.pageY;
         }
-      })();
+      });
       onLayoutProp?.(e);
     },
     [containerHeight, containerTop, scrollViewRef, onLayoutProp]
