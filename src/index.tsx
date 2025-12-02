@@ -1,5 +1,9 @@
 import React from 'react';
-import { StyleSheet, type ViewStyle } from 'react-native';
+import {
+  StyleSheet,
+  type ViewStyle,
+  type LayoutChangeEvent,
+} from 'react-native';
 import Animated, {
   useAnimatedReaction,
   useSharedValue,
@@ -7,9 +11,20 @@ import Animated, {
   withSpring,
   withTiming,
   type SharedValue,
+  useAnimatedRef,
+  scrollTo,
+  type AnimatedRef,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+
+// ------------------------------------------------------------------
+// CONFIGURATION
+// ------------------------------------------------------------------
+const AUTO_SCROLL_THRESHOLD = 80; // pixels from edge to trigger auto-scroll
+const AUTO_SCROLL_SPEED = 8; // pixels per frame
+const DEFAULT_DRAG_ACTIVATION_DELAY = 200; // ms to hold before drag activates
+const SWAP_THRESHOLD = 0.5; // percentage of item height needed to trigger swap
 
 // ------------------------------------------------------------------
 // TYPES
@@ -29,6 +44,8 @@ type DraggableListProps<T> = {
   keyExtractor: (item: T) => string;
   style?: ViewStyle;
   contentContainerStyle?: ViewStyle;
+  /** Time in ms to hold before drag activates. Default: 200ms */
+  dragActivationDelay?: number;
 };
 
 // ------------------------------------------------------------------
@@ -43,55 +60,109 @@ type DraggableItemProps = {
   itemHeight: number;
   totalCount: number;
   onDragFinalize: () => void;
+  containerHeight: SharedValue<number>;
+  contentHeight: number;
+  scrollViewRef: AnimatedRef<any>;
+  dragActivationDelay: number;
 };
 
 const DraggableItem = ({
   id,
+  index,
   child,
   positions,
   scrollY,
   itemHeight,
   totalCount,
   onDragFinalize,
+  containerHeight,
+  contentHeight,
+  scrollViewRef,
+  dragActivationDelay,
 }: DraggableItemProps) => {
   const isDragging = useSharedValue(false);
-  const top = useSharedValue((positions.value[id] ?? 0) * itemHeight);
+  // Use index prop for initial value to avoid reading shared value during render
+  const top = useSharedValue(index * itemHeight);
 
-  // We expose a drag handle if needed, but for this implementation
-  // we attach the gesture to the whole row.
+  // Track initial positions when drag starts
+  const startY = useSharedValue(0);
+  const startTop = useSharedValue(0);
+  const startScrollY = useSharedValue(0);
+
+  // Drag activates after holding for the specified delay, allowing scroll otherwise
   const pan = Gesture.Pan()
+    .activateAfterLongPress(dragActivationDelay)
     .onBegin(() => {
       isDragging.value = true;
     })
+    .onStart((e: { absoluteY: number }) => {
+      // Capture initial positions when drag becomes active
+      startY.value = e.absoluteY;
+      startScrollY.value = scrollY.value;
+      const currentIndex = positions.value[id] ?? 0;
+      startTop.value = currentIndex * itemHeight;
+    })
     .onUpdate((e: { absoluteY: number }) => {
-      // Logic: Absolute position + Scroll Offset - Half Item Height
-      // Note: We might need to adjust 'absoluteY' logic depending on header height in real apps
-      // For a library, usually better to use 'translationY' + initial offset,
-      // but sticking to your requested architecture:
-      top.value = e.absoluteY + scrollY.value - itemHeight / 2;
+      // Calculate position based on movement from start position
+      const deltaY = e.absoluteY - startY.value;
+      const deltaScroll = scrollY.value - startScrollY.value;
+      top.value = startTop.value + deltaY + deltaScroll;
 
-      const newIndex = Math.floor((top.value + itemHeight / 2) / itemHeight);
-      const clampedIndex = Math.max(0, Math.min(newIndex, totalCount - 1));
+      // Auto-scroll when near edges - directly on UI thread
+      const distanceFromTop = e.absoluteY;
+      const distanceFromBottom = containerHeight.value - e.absoluteY;
+      const maxScroll = Math.max(0, contentHeight - containerHeight.value);
 
-      if (clampedIndex !== positions.value[id]) {
-        const objectKeys = Object.keys(positions.value);
-        const itemToSwapId = objectKeys.find(
-          (key) => positions.value[key] === clampedIndex
+      if (distanceFromTop < AUTO_SCROLL_THRESHOLD && scrollY.value > 0) {
+        // Scroll up
+        const newScroll = Math.max(0, scrollY.value - AUTO_SCROLL_SPEED);
+        scrollTo(scrollViewRef, 0, newScroll, false);
+      } else if (
+        distanceFromBottom < AUTO_SCROLL_THRESHOLD &&
+        scrollY.value < maxScroll
+      ) {
+        // Scroll down
+        const newScroll = Math.min(
+          maxScroll,
+          scrollY.value + AUTO_SCROLL_SPEED
+        );
+        scrollTo(scrollViewRef, 0, newScroll, false);
+      }
+
+      // Calculate displacement from current position to determine swap
+      const currentIndex = positions.value[id] ?? 0;
+      const currentTop = currentIndex * itemHeight;
+      const displacement = top.value - currentTop;
+      const thresholdDistance = itemHeight * SWAP_THRESHOLD;
+
+      // Only swap if we've moved past the threshold
+      if (Math.abs(displacement) > thresholdDistance) {
+        const targetIndex =
+          displacement > 0 ? currentIndex + 1 : currentIndex - 1;
+        const clampedTargetIndex = Math.max(
+          0,
+          Math.min(targetIndex, totalCount - 1)
         );
 
-        if (itemToSwapId && itemToSwapId !== id) {
-          const oldIndex = positions.value[id] ?? 0;
-          const newPositions = { ...positions.value };
-          newPositions[id] = clampedIndex;
-          newPositions[itemToSwapId] = oldIndex;
-          positions.value = newPositions;
+        if (clampedTargetIndex !== currentIndex) {
+          const objectKeys = Object.keys(positions.value);
+          const itemToSwapId = objectKeys.find(
+            (key) => positions.value[key] === clampedTargetIndex
+          );
+
+          if (itemToSwapId && itemToSwapId !== id) {
+            const newPositions = { ...positions.value };
+            newPositions[id] = clampedTargetIndex;
+            newPositions[itemToSwapId] = currentIndex;
+            positions.value = newPositions;
+          }
         }
       }
     })
     .onFinalize(() => {
       const targetIndex = positions.value[id] ?? 0;
       const finalTop = targetIndex * itemHeight;
-      top.value = withSpring(finalTop, { damping: 15, stiffness: 150 });
+      top.value = withSpring(finalTop, { damping: 30, stiffness: 300 });
       isDragging.value = false;
       scheduleOnRN(onDragFinalize);
     });
@@ -112,7 +183,14 @@ const DraggableItem = ({
   const animatedStyle = useAnimatedStyle(() => ({
     top: top.value,
     zIndex: isDragging.value ? 9999 : 1,
-    transform: [{ scale: withSpring(isDragging.value ? 1.05 : 1) }],
+    transform: [
+      {
+        scale: withSpring(isDragging.value ? 1.05 : 1, {
+          damping: 30,
+          stiffness: 300,
+        }),
+      },
+    ],
   }));
 
   return (
@@ -137,6 +215,7 @@ export function DraggableList<T extends { id?: string | number }>({
   keyExtractor,
   style,
   contentContainerStyle,
+  dragActivationDelay = DEFAULT_DRAG_ACTIVATION_DELAY,
 }: DraggableListProps<T>) {
   // Initialize positions map
   const positions = useSharedValue<Record<string, number>>(
@@ -144,6 +223,9 @@ export function DraggableList<T extends { id?: string | number }>({
   );
 
   const scrollY = useSharedValue(0);
+  const containerHeight = useSharedValue(0);
+  const scrollViewRef = useAnimatedRef<any>();
+  const contentHeight = data.length * itemHeight;
 
   const handleDragFinalize = () => {
     // Reconstruct the array based on the shared value positions
@@ -165,15 +247,21 @@ export function DraggableList<T extends { id?: string | number }>({
     scrollY.value = e.nativeEvent.contentOffset.y;
   };
 
+  const onLayout = (e: LayoutChangeEvent) => {
+    containerHeight.value = e.nativeEvent.layout.height;
+  };
+
   return (
     <Animated.ScrollView
+      ref={scrollViewRef}
       onScroll={onScroll}
+      onLayout={onLayout}
       scrollEventThrottle={16}
       style={style}
       contentContainerStyle={[
         contentContainerStyle,
         styles.container,
-        { height: data.length * itemHeight },
+        { height: contentHeight },
       ]}
     >
       {data.map((item, index) => {
@@ -188,6 +276,10 @@ export function DraggableList<T extends { id?: string | number }>({
             itemHeight={itemHeight}
             totalCount={data.length}
             onDragFinalize={handleDragFinalize}
+            containerHeight={containerHeight}
+            contentHeight={contentHeight}
+            scrollViewRef={scrollViewRef}
+            dragActivationDelay={dragActivationDelay}
             child={renderItem({
               item,
               index,
