@@ -5,10 +5,11 @@ A high-performance draggable list component for React Native, built with Reanima
 ## Features
 
 - 🚀 **UI Thread Performance** - All animations run on the UI thread via Reanimated
-- 📜 **Auto-scroll** - Automatically scrolls when dragging near edges
+- 📜 **Progressive Auto-scroll** - Automatically scrolls when dragging near edges with exponential speed curve
 - ⏱️ **Long Press Activation** - Hold to drag, tap to scroll - configurable delay
 - 🎯 **Smooth Animations** - Spring animations for natural feeling interactions
 - 📱 **Fabric Ready** - Built for the new React Native architecture
+- 🪆 **Nestable Lists** - Multiple draggable lists within a single scrollable container
 
 ## Requirements
 
@@ -30,6 +31,8 @@ npm install react-native-reanimated react-native-gesture-handler react-native-wo
 ```
 
 ## Usage
+
+### Basic Usage
 
 ```tsx
 import { DraggableList, type RenderItemParams } from 'react-native-reanimated-drag-list';
@@ -83,7 +86,67 @@ const styles = StyleSheet.create({
 });
 ```
 
-## Props
+### Nesting Multiple Draggable Lists
+
+You can render multiple `NestableDraggableFlatList` components within a single scrollable parent using `NestableScrollContainer`. This is useful when you have multiple categories or sections that each need their own reorderable list.
+
+> **Note:** When using `NestableDraggableFlatList`, React Native warnings about nested VirtualizedLists are automatically suppressed.
+
+```tsx
+import {
+  NestableScrollContainer,
+  NestableDraggableFlatList,
+} from 'react-native-reanimated-drag-list';
+
+function App() {
+  const [data1, setData1] = useState(initialData1);
+  const [data2, setData2] = useState(initialData2);
+  const [data3, setData3] = useState(initialData3);
+
+  const renderItem = ({ item }) => (
+    <View style={styles.item}>
+      <Text>{item.label}</Text>
+    </View>
+  );
+
+  const keyExtractor = (item) => item.id;
+
+  return (
+    <NestableScrollContainer style={styles.container}>
+      <Text style={styles.header}>Shopping List</Text>
+      <NestableDraggableFlatList
+        data={data1}
+        itemHeight={60}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        onDragEnd={setData1}
+      />
+
+      <Text style={styles.header}>Tasks</Text>
+      <NestableDraggableFlatList
+        data={data2}
+        itemHeight={60}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        onDragEnd={setData2}
+      />
+
+      <Text style={styles.header}>Favorites</Text>
+      <NestableDraggableFlatList
+        data={data3}
+        itemHeight={60}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        onDragEnd={setData3}
+      />
+    </NestableScrollContainer>
+  );
+}
+```
+
+## API Reference
+
+### DraggableList Props
 
 | Prop | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
@@ -96,7 +159,30 @@ const styles = StyleSheet.create({
 | `contentContainerStyle` | `ViewStyle` | ❌ | - | Style for the content container |
 | `dragActivationDelay` | `number` | ❌ | `200` | Milliseconds to hold before drag activates |
 
-## RenderItemParams
+### NestableScrollContainer Props
+
+Extends all `ScrollView` props from `react-native-gesture-handler`.
+
+| Prop | Type | Required | Description |
+|------|------|----------|-------------|
+| `children` | `ReactNode` | ✅ | Content including `NestableDraggableFlatList` components |
+
+### NestableDraggableFlatList Props
+
+| Prop | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `data` | `T[]` | ✅ | - | Array of items to render |
+| `itemHeight` | `number` | ✅ | - | Height of each item (must be consistent) |
+| `renderItem` | `(params: RenderItemParams<T>) => ReactNode` | ✅ | - | Function to render each item |
+| `keyExtractor` | `(item: T) => string` | ✅ | - | Function to extract unique key from item |
+| `onDragEnd` | `(data: T[]) => void` | ✅ | - | Callback with reordered data after drag ends |
+| `style` | `ViewStyle` | ❌ | - | Style for the list container |
+| `contentContainerStyle` | `ViewStyle` | ❌ | - | Style for the content container |
+| `dragActivationDelay` | `number` | ❌ | `200` | Milliseconds to hold before drag activates |
+| `ListHeaderComponent` | `ReactNode` | ❌ | - | Component rendered above list items |
+| `ListFooterComponent` | `ReactNode` | ❌ | - | Component rendered below list items |
+
+### RenderItemParams
 
 ```tsx
 type RenderItemParams<T> = {
@@ -114,7 +200,13 @@ type RenderItemParams<T> = {
 3. **Release** to drop the item in its new position
 4. **Scroll** normally with quick swipes - dragging only activates on hold
 
-The list automatically scrolls when you drag an item near the top or bottom edges.
+### Auto-scroll Behavior
+
+The list automatically scrolls when you drag an item near the top or bottom edges:
+
+- **Direction-aware**: Only scrolls when you're actively moving toward the edge
+- **Progressive speed**: Uses an exponential curve - gentle near the threshold, rapid at the edge
+- **Smooth integration**: The dragged item follows the scroll seamlessly
 
 ## License
 
