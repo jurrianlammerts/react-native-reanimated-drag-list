@@ -49,6 +49,14 @@ export type NestableDraggableFlatListProps<T> = {
   ListHeaderComponent?: React.ReactNode;
   /** Footer component rendered below the list items */
   ListFooterComponent?: React.ReactNode;
+  /** Distance from edge (in px) to trigger auto-scroll. Default: 100 */
+  autoScrollThreshold?: number;
+  /** Maximum auto-scroll speed (px per frame). Default: 12 */
+  autoScrollMaxSpeed?: number;
+  /** Minimum auto-scroll speed (px per frame). Default: 1 */
+  autoScrollMinSpeed?: number;
+  /** Smoothing factor for auto-scroll velocity transitions (0-1). Lower = smoother. Default: 0.15 */
+  autoScrollSmoothing?: number;
 };
 
 // ------------------------------------------------------------------
@@ -69,6 +77,10 @@ type NestableDraggableItemProps = {
   scrollViewRef: AnimatedRef<any>;
   dragActivationDelay: number;
   outerScrollEnabled: SharedValue<boolean>;
+  autoScrollThreshold: number;
+  autoScrollMaxSpeed: number;
+  autoScrollMinSpeed: number;
+  autoScrollSmoothing: number;
 };
 
 const NestableDraggableItem = ({
@@ -86,6 +98,10 @@ const NestableDraggableItem = ({
   scrollViewRef,
   dragActivationDelay,
   outerScrollEnabled,
+  autoScrollThreshold,
+  autoScrollMaxSpeed,
+  autoScrollMinSpeed,
+  autoScrollSmoothing,
 }: NestableDraggableItemProps) => {
   const isDragging = useSharedValue(false);
   // Track when item is settling to final position (prevents reaction interference)
@@ -117,15 +133,15 @@ const NestableDraggableItem = ({
     // Normalize distance: 0 = at edge, 1 = at threshold boundary
     const normalizedDistance = Math.min(
       1,
-      Math.max(0, distanceFromEdge / AUTO_SCROLL_THRESHOLD)
+      Math.max(0, distanceFromEdge / autoScrollThreshold)
     );
     // Use smooth sine easing for gradual, natural acceleration
     // cos goes from 1 to -1, so (1 - cos) / 2 goes from 0 to 1
     const easedProgress =
       (1 - Math.cos((1 - normalizedDistance) * Math.PI)) / 2;
     return (
-      AUTO_SCROLL_MIN_SPEED +
-      (AUTO_SCROLL_MAX_SPEED - AUTO_SCROLL_MIN_SPEED) * easedProgress
+      autoScrollMinSpeed +
+      (autoScrollMaxSpeed - autoScrollMinSpeed) * easedProgress
     );
   };
 
@@ -153,14 +169,14 @@ const NestableDraggableItem = ({
 
     // Determine target velocity based on position in auto-scroll zones
     if (
-      distanceFromTop < AUTO_SCROLL_THRESHOLD &&
+      distanceFromTop < autoScrollThreshold &&
       distanceFromTop >= 0 &&
       scrollY.value > 0
     ) {
       // Target upward scroll (negative velocity)
       targetVelocity = -getTargetSpeed(distanceFromTop);
     } else if (
-      distanceFromBottom < AUTO_SCROLL_THRESHOLD &&
+      distanceFromBottom < autoScrollThreshold &&
       distanceFromBottom >= 0 &&
       scrollY.value < maxScroll
     ) {
@@ -173,7 +189,7 @@ const NestableDraggableItem = ({
     currentScrollVelocity.value = lerp(
       currentScrollVelocity.value,
       targetVelocity,
-      AUTO_SCROLL_SMOOTHING
+      autoScrollSmoothing
     );
 
     // Apply scroll if velocity is significant
@@ -184,6 +200,10 @@ const NestableDraggableItem = ({
         Math.min(maxScroll, scrollY.value + scrollDelta)
       );
       scrollTo(scrollViewRef, 0, newScroll, false);
+
+      // Update scrollY immediately to prevent race condition with onUpdate
+      // The scroll handler will also update it, but this ensures consistency
+      scrollY.value = newScroll;
 
       // Update the dragged item position to account for scroll
       const deltaY = currentFingerY.value - startY.value;
@@ -348,6 +368,10 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
   dragActivationDelay = DEFAULT_DRAG_ACTIVATION_DELAY,
   ListHeaderComponent,
   ListFooterComponent,
+  autoScrollThreshold = AUTO_SCROLL_THRESHOLD,
+  autoScrollMaxSpeed = AUTO_SCROLL_MAX_SPEED,
+  autoScrollMinSpeed = AUTO_SCROLL_MIN_SPEED,
+  autoScrollSmoothing = AUTO_SCROLL_SMOOTHING,
 }: NestableDraggableFlatListProps<T>) {
   const {
     scrollY,
@@ -414,6 +438,10 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               scrollViewRef={scrollViewRef}
               dragActivationDelay={dragActivationDelay}
               outerScrollEnabled={outerScrollEnabled}
+              autoScrollThreshold={autoScrollThreshold}
+              autoScrollMaxSpeed={autoScrollMaxSpeed}
+              autoScrollMinSpeed={autoScrollMinSpeed}
+              autoScrollSmoothing={autoScrollSmoothing}
               child={renderItem({
                 item,
                 index,
