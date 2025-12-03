@@ -9,6 +9,7 @@ import Animated, {
   type AnimatedRef,
   useFrameCallback,
   scrollTo,
+  measure,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -201,6 +202,15 @@ const NestableDraggableItem = ({
       currentScrollVelocity.value = 0;
       // Disable outer scroll while dragging
       outerScrollEnabled.value = false;
+
+      // Re-measure container position at drag start for accurate auto-scroll
+      // This is crucial for BottomSheet scenarios where the container position
+      // may have changed since the last layout measurement
+      const measurement = measure(scrollViewRef);
+      if (measurement) {
+        containerTop.value = measurement.pageY;
+        containerHeight.value = measurement.height;
+      }
 
       startY.value = e.absoluteY;
       startScrollY.value = scrollY.value;

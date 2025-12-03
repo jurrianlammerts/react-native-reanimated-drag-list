@@ -59,17 +59,18 @@ export function NestableScrollContainer({
     if (measureKey === undefined) {
       return;
     }
-    // Small delay to allow animations to settle
+    // Longer delay to allow BottomSheet animations to complete (~300ms typical)
     const timeoutId = setTimeout(() => {
       scheduleOnRN(() => {
         const measurement = measure(scrollViewRef);
         if (measurement) {
           containerTop.value = measurement.pageY;
+          containerHeight.value = measurement.height;
         }
       });
-    }, 150);
+    }, 350);
     return () => clearTimeout(timeoutId);
-  }, [measureKey, scrollViewRef, containerTop]);
+  }, [measureKey, scrollViewRef, containerTop, containerHeight]);
 
   const callOnScrollProp = useCallback(
     (event: any) => {
