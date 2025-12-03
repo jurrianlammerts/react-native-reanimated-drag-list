@@ -166,6 +166,38 @@ Extends all `ScrollView` props from `react-native-gesture-handler`.
 | Prop | Type | Required | Description |
 |------|------|----------|-------------|
 | `children` | `ReactNode` | ✅ | Content including `NestableDraggableFlatList` components |
+| `measureKey` | `number \| string` | ❌ | When this value changes, the container re-measures its position on screen. Useful when the container is inside an animated parent like a BottomSheet. |
+
+#### Usage with BottomSheet
+
+When using `NestableScrollContainer` inside a `BottomSheet`, pass the bottom sheet's index as `measureKey` to ensure auto-scroll works correctly when the sheet animates:
+
+```tsx
+import BottomSheet from '@gorhom/bottom-sheet';
+import { NestableScrollContainer, NestableDraggableFlatList } from 'react-native-reanimated-drag-list';
+
+function MyComponent() {
+  const [bottomSheetIndex, setBottomSheetIndex] = useState(1);
+
+  return (
+    <BottomSheet
+      index={1}
+      snapPoints={['25%', '55%']}
+      onChange={setBottomSheetIndex}
+    >
+      <NestableScrollContainer measureKey={bottomSheetIndex}>
+        <NestableDraggableFlatList
+          data={data}
+          itemHeight={100}
+          renderItem={renderItem}
+          onDragEnd={handleDragEnd}
+          keyExtractor={(item) => item.id}
+        />
+      </NestableScrollContainer>
+    </BottomSheet>
+  );
+}
+```
 
 ### NestableDraggableFlatList Props
 

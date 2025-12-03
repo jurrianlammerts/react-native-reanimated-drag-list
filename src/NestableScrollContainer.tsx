@@ -67,7 +67,7 @@ export function NestableScrollContainer({
           containerTop.value = measurement.pageY;
         }
       });
-    }, 100);
+    }, 150);
     return () => clearTimeout(timeoutId);
   }, [measureKey, scrollViewRef, containerTop]);
 

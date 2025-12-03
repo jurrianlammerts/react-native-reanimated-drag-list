@@ -21,6 +21,7 @@ import { useNestableScrollContainerContext } from './NestableContext';
 const AUTO_SCROLL_THRESHOLD = 100;
 const AUTO_SCROLL_MAX_SPEED = 12;
 const AUTO_SCROLL_MIN_SPEED = 1;
+const AUTO_SCROLL_SMOOTHING = 0.15; // Lower = smoother transitions (0-1)
 const DEFAULT_DRAG_ACTIVATION_DELAY = 200;
 const SWAP_THRESHOLD = 0.5;
 
@@ -94,8 +95,8 @@ const NestableDraggableItem = ({
   const startTop = useSharedValue(0);
   const startScrollY = useSharedValue(0);
   const currentFingerY = useSharedValue(0);
-  const previousFingerY = useSharedValue(0);
-  const movementDirection = useSharedValue(0); // -1 = up, 0 = none, 1 = down
+  // Smoothed scroll velocity for butter-smooth autoscroll
+  const currentScrollVelocity = useSharedValue(0);
 
   // Sync position with index on mount and when not actively dragging
   useAnimatedReaction(
@@ -108,27 +109,38 @@ const NestableDraggableItem = ({
     [index, itemHeight]
   );
 
-  // Calculate progressive scroll speed with exponential curve
-  // Closer to edge = faster scroll (exponential ramp up)
-  const getProgressiveSpeed = (distanceFromEdge: number) => {
+  // Calculate target scroll speed using smooth easing
+  // Uses a smooth sine-based ease for gradual acceleration
+  const getTargetSpeed = (distanceFromEdge: number) => {
     'worklet';
     // Normalize distance: 0 = at edge, 1 = at threshold boundary
     const normalizedDistance = Math.min(
       1,
       Math.max(0, distanceFromEdge / AUTO_SCROLL_THRESHOLD)
     );
-    // Use exponential curve (power of 3) for aggressive acceleration near edge
-    // At edge (0): speed = MAX, at threshold (1): speed = MIN
-    const easedProgress = Math.pow(1 - normalizedDistance, 3);
+    // Use smooth sine easing for gradual, natural acceleration
+    // cos goes from 1 to -1, so (1 - cos) / 2 goes from 0 to 1
+    const easedProgress =
+      (1 - Math.cos((1 - normalizedDistance) * Math.PI)) / 2;
     return (
       AUTO_SCROLL_MIN_SPEED +
       (AUTO_SCROLL_MAX_SPEED - AUTO_SCROLL_MIN_SPEED) * easedProgress
     );
   };
 
-  // Continuous auto-scroll using frame callback
+  // Linear interpolation helper for smooth transitions
+  const lerp = (current: number, target: number, factor: number) => {
+    'worklet';
+    return current + (target - current) * factor;
+  };
+
+  // Continuous auto-scroll using frame callback with velocity smoothing
   useFrameCallback(() => {
-    if (!isDragging.value) return;
+    if (!isDragging.value) {
+      // Smoothly decay velocity when not dragging
+      currentScrollVelocity.value = lerp(currentScrollVelocity.value, 0, 0.3);
+      return;
+    }
 
     // Calculate finger position relative to the container (not the screen)
     const relativeFingerY = currentFingerY.value - containerTop.value;
@@ -136,42 +148,43 @@ const NestableDraggableItem = ({
     const distanceFromBottom = containerHeight.value - relativeFingerY;
     const maxScroll = Math.max(0, contentHeight.value - containerHeight.value);
 
-    let scrollDelta = 0;
+    let targetVelocity = 0;
 
-    // Only scroll up if:
-    // - Finger is in the top threshold zone (relative to container)
-    // - User is moving upward (movementDirection < 0)
-    // - There's room to scroll up
-    const isMovingUp = movementDirection.value < 0;
-    const isMovingDown = movementDirection.value > 0;
-
+    // Determine target velocity based on position in auto-scroll zones
     if (
       distanceFromTop < AUTO_SCROLL_THRESHOLD &&
       distanceFromTop >= 0 &&
-      scrollY.value > 0 &&
-      isMovingUp
+      scrollY.value > 0
     ) {
-      scrollDelta = -getProgressiveSpeed(distanceFromTop);
+      // Target upward scroll (negative velocity)
+      targetVelocity = -getTargetSpeed(distanceFromTop);
     } else if (
       distanceFromBottom < AUTO_SCROLL_THRESHOLD &&
       distanceFromBottom >= 0 &&
-      scrollY.value < maxScroll &&
-      isMovingDown
+      scrollY.value < maxScroll
     ) {
-      // Only scroll down if:
-      // - Finger is in the bottom threshold zone (relative to container)
-      // - User is moving downward (movementDirection > 0)
-      // - There's room to scroll down
-      scrollDelta = getProgressiveSpeed(distanceFromBottom);
+      // Target downward scroll (positive velocity)
+      targetVelocity = getTargetSpeed(distanceFromBottom);
     }
 
-    if (scrollDelta !== 0) {
+    // Smoothly interpolate current velocity toward target
+    // This creates butter-smooth acceleration/deceleration
+    currentScrollVelocity.value = lerp(
+      currentScrollVelocity.value,
+      targetVelocity,
+      AUTO_SCROLL_SMOOTHING
+    );
+
+    // Apply scroll if velocity is significant
+    const scrollDelta = currentScrollVelocity.value;
+    if (Math.abs(scrollDelta) > 0.1) {
       const newScroll = Math.max(
         0,
         Math.min(maxScroll, scrollY.value + scrollDelta)
       );
       scrollTo(scrollViewRef, 0, newScroll, false);
 
+      // Update the dragged item position to account for scroll
       const deltaY = currentFingerY.value - startY.value;
       const deltaScroll = newScroll - startScrollY.value;
       top.value = startTop.value + deltaY + deltaScroll;
@@ -184,32 +197,20 @@ const NestableDraggableItem = ({
       // Only set isDragging when gesture actually activates (after long press)
       isDragging.value = true;
       isSettling.value = false;
-      movementDirection.value = 0;
+      // Reset scroll velocity for fresh start
+      currentScrollVelocity.value = 0;
       // Disable outer scroll while dragging
       outerScrollEnabled.value = false;
 
       startY.value = e.absoluteY;
       startScrollY.value = scrollY.value;
       currentFingerY.value = e.absoluteY;
-      previousFingerY.value = e.absoluteY;
       const currentIndex = positions.value[id] ?? 0;
       startTop.value = currentIndex * itemHeight;
       // Ensure we start from the correct position
       top.value = startTop.value;
     })
     .onUpdate((e: { absoluteY: number }) => {
-      // Calculate movement direction based on finger movement
-      const deltaFromPrevious = e.absoluteY - previousFingerY.value;
-      // Use a small threshold to avoid jitter from minor movements
-      const DIRECTION_THRESHOLD = 2;
-      if (deltaFromPrevious > DIRECTION_THRESHOLD) {
-        movementDirection.value = 1; // Moving down
-      } else if (deltaFromPrevious < -DIRECTION_THRESHOLD) {
-        movementDirection.value = -1; // Moving up
-      }
-      // Don't reset to 0 if within threshold - keep last direction
-
-      previousFingerY.value = currentFingerY.value;
       currentFingerY.value = e.absoluteY;
 
       const deltaY = e.absoluteY - startY.value;
@@ -253,6 +254,8 @@ const NestableDraggableItem = ({
       // Mark as settling before starting animation
       isSettling.value = true;
       isDragging.value = false;
+      // Reset scroll velocity
+      currentScrollVelocity.value = 0;
 
       const targetIndex = positions.value[id] ?? 0;
       const finalTop = targetIndex * itemHeight;
