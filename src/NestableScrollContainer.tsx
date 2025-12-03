@@ -23,6 +23,8 @@ const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
 // ------------------------------------------------------------------
 export type NestableScrollContainerProps = ScrollViewProps & {
   children: React.ReactNode;
+  /** Key that triggers re-measurement of container position when changed */
+  measureKey?: number | string;
 };
 
 // ------------------------------------------------------------------
@@ -33,6 +35,7 @@ export function NestableScrollContainer({
   onScroll: onScrollProp,
   onLayout: onLayoutProp,
   onContentSizeChange: onContentSizeChangeProp,
+  measureKey,
   ...scrollViewProps
 }: NestableScrollContainerProps) {
   const scrollY = useSharedValue(0);
@@ -49,6 +52,24 @@ export function NestableScrollContainer({
       restoreNestedListWarning();
     };
   }, []);
+
+  // Re-measure container position when measureKey changes
+  // This is useful when the container is inside a BottomSheet that animates
+  useEffect(() => {
+    if (measureKey === undefined) {
+      return;
+    }
+    // Small delay to allow animations to settle
+    const timeoutId = setTimeout(() => {
+      scheduleOnRN(() => {
+        const measurement = measure(scrollViewRef);
+        if (measurement) {
+          containerTop.value = measurement.pageY;
+        }
+      });
+    }, 100);
+    return () => clearTimeout(timeoutId);
+  }, [measureKey, scrollViewRef, containerTop]);
 
   const callOnScrollProp = useCallback(
     (event: any) => {

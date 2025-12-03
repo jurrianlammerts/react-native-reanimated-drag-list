@@ -250,7 +250,6 @@ export const DraggableItem = ({
   );
 
   const animatedStyle = useAnimatedStyle(() => {
-    const isActive = isDragging.value || isSettling.value;
     return {
       top: top.value,
       zIndex: isDragging.value ? 9999 : isSettling.value ? 9998 : 1,
@@ -261,11 +260,6 @@ export const DraggableItem = ({
             : withSpring(1, { damping: 40, stiffness: 350 }),
         },
       ],
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: isDragging.value ? 8 : 0 },
-      shadowOpacity: isDragging.value ? 0.3 : 0,
-      shadowRadius: isDragging.value ? 12 : 0,
-      elevation: isActive ? 10 : 0,
     };
   });
 
