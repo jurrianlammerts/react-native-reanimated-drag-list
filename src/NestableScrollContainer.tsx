@@ -59,6 +59,29 @@ export const NestableScrollContainer = forwardRef<
   const outerScrollEnabled = useSharedValue(true);
   const scrollViewRef = useAnimatedRef<any>();
 
+  // Track whether callbacks exist using shared values (accessible in worklets)
+  const hasOnScrollProp = useSharedValue(!!onScrollProp);
+  const hasOnScrollBeginDragProp = useSharedValue(!!onScrollBeginDragProp);
+  const hasOnScrollEndDragProp = useSharedValue(!!onScrollEndDragProp);
+  const hasOnMomentumScrollEndProp = useSharedValue(!!onMomentumScrollEndProp);
+
+  // Update shared values when props change
+  useEffect(() => {
+    hasOnScrollProp.value = !!onScrollProp;
+    hasOnScrollBeginDragProp.value = !!onScrollBeginDragProp;
+    hasOnScrollEndDragProp.value = !!onScrollEndDragProp;
+    hasOnMomentumScrollEndProp.value = !!onMomentumScrollEndProp;
+  }, [
+    onScrollProp,
+    onScrollBeginDragProp,
+    onScrollEndDragProp,
+    onMomentumScrollEndProp,
+    hasOnScrollProp,
+    hasOnScrollBeginDragProp,
+    hasOnScrollEndDragProp,
+    hasOnMomentumScrollEndProp,
+  ]);
+
   // Forward the internal ref to the external ref
   useImperativeHandle(ref, () => scrollViewRef.current, [scrollViewRef]);
 
@@ -118,32 +141,33 @@ export const NestableScrollContainer = forwardRef<
   );
 
   // Animated scroll handler
+  // Note: We use shared values (hasOn*Prop) to check if callbacks exist
+  // because worklets run on the UI thread and can't access JS values directly
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
       scrollY.value = event.contentOffset.y;
-      if (onScrollProp) {
-        // Call the user's onScroll handler on the JS thread
+      if (hasOnScrollProp.value) {
         scheduleOnRN(() => {
           callOnScrollProp({ nativeEvent: event });
         });
       }
     },
     onBeginDrag: (event) => {
-      if (onScrollBeginDragProp) {
+      if (hasOnScrollBeginDragProp.value) {
         scheduleOnRN(() => {
           callOnScrollBeginDragProp({ nativeEvent: event });
         });
       }
     },
     onEndDrag: (event) => {
-      if (onScrollEndDragProp) {
+      if (hasOnScrollEndDragProp.value) {
         scheduleOnRN(() => {
           callOnScrollEndDragProp({ nativeEvent: event });
         });
       }
     },
     onMomentumEnd: (event) => {
-      if (onMomentumScrollEndProp) {
+      if (hasOnMomentumScrollEndProp.value) {
         scheduleOnRN(() => {
           callOnMomentumScrollEndProp({ nativeEvent: event });
         });
