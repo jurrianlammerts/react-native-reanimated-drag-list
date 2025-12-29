@@ -38,6 +38,9 @@
     "typecheck": "tsc",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
     "release": "release-it --only-version",
+    "release:major": "release-it --only-version --increment major",
+    "release:minor": "release-it --only-version --increment minor",
+    "release:patch": "release-it --only-version --increment patch",
     "test": "jest"
   },
   "keywords": [
