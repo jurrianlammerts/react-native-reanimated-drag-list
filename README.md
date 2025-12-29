@@ -10,6 +10,8 @@ A high-performance draggable list component for React Native, built with Reanima
 - 🎯 **Smooth Animations** - Spring animations for natural feeling interactions
 - 📱 **Fabric Ready** - Built for the new React Native architecture
 - 🪆 **Nestable Lists** - Multiple draggable lists within a single scrollable container
+- 📏 **Dynamic Heights** - Support for items with variable heights
+- 🚫 **Drag Disabled Zones** - Exclude interactive elements from triggering drag
 
 ## Requirements
 
@@ -144,12 +146,91 @@ function App() {
 }
 ```
 
+### Dynamic Item Heights
+
+`NestableDraggableFlatList` supports items with variable heights. Simply omit the `itemHeight` prop and let items measure themselves:
+
+```tsx
+import {
+  NestableScrollContainer,
+  NestableDraggableFlatList,
+} from 'react-native-reanimated-drag-list';
+
+function App() {
+  const [items, setItems] = useState(data);
+
+  const renderItem = ({ item }) => (
+    <View style={styles.item}>
+      <Text style={styles.title}>{item.title}</Text>
+      {item.description && (
+        <Text style={styles.description}>{item.description}</Text>
+      )}
+    </View>
+  );
+
+  return (
+    <NestableScrollContainer style={styles.container}>
+      <NestableDraggableFlatList
+        data={items}
+        // No itemHeight - heights are measured automatically
+        estimatedItemHeight={80} // Optional: helps with initial layout
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id}
+        onDragEnd={setItems}
+      />
+    </NestableScrollContainer>
+  );
+}
+```
+
+### Drag Disabled Zones
+
+Use `DragDisabledZone` to wrap interactive elements (buttons, inputs, etc.) that should not trigger drag activation:
+
+```tsx
+import {
+  NestableScrollContainer,
+  NestableDraggableFlatList,
+  DragDisabledZone,
+} from 'react-native-reanimated-drag-list';
+
+function App() {
+  const [items, setItems] = useState(data);
+
+  const renderItem = ({ item }) => (
+    <View style={styles.item}>
+      <Text>{item.title}</Text>
+      <DragDisabledZone>
+        <TouchableOpacity 
+          style={styles.deleteButton}
+          onPress={() => deleteItem(item.id)}
+        >
+          <Text>Delete</Text>
+        </TouchableOpacity>
+      </DragDisabledZone>
+    </View>
+  );
+
+  return (
+    <NestableScrollContainer>
+      <NestableDraggableFlatList
+        data={items}
+        itemHeight={60}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id}
+        onDragEnd={setItems}
+      />
+    </NestableScrollContainer>
+  );
+}
+```
+
 ## API Reference
 
 ### DraggableList Props
 
 | Prop | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
+| ------ | ------ | ---------- | --------- | ------------- |
 | `data` | `T[]` | ✅ | - | Array of items to render |
 | `itemHeight` | `number` | ✅ | - | Height of each item (must be consistent) |
 | `renderItem` | `(params: RenderItemParams<T>) => ReactNode` | ✅ | - | Function to render each item |
@@ -161,12 +242,16 @@ function App() {
 
 ### NestableScrollContainer Props
 
-Extends all `ScrollView` props from `react-native-gesture-handler`.
+Extends all `ScrollView` props from `react-native-gesture-handler`. Supports `ref` forwarding to access the underlying ScrollView.
 
 | Prop | Type | Required | Description |
-|------|------|----------|-------------|
+| ---- | ---- | -------- | ----------- |
 | `children` | `ReactNode` | ✅ | Content including `NestableDraggableFlatList` components |
-| `measureKey` | `number \| string` | ❌ | When this value changes, the container re-measures its position on screen. Useful when the container is inside an animated parent like a BottomSheet. |
+| `measureKey` | `number` or `string` | ❌ | When this value changes, the container re-measures its position on screen. Useful when the container is inside an animated parent like a BottomSheet. |
+| `onScroll` | `ScrollViewProps['onScroll']` | ❌ | Scroll event handler |
+| `onScrollBeginDrag` | `ScrollViewProps['onScrollBeginDrag']` | ❌ | Called when user begins dragging the scroll view |
+| `onScrollEndDrag` | `ScrollViewProps['onScrollEndDrag']` | ❌ | Called when user stops dragging the scroll view |
+| `onMomentumScrollEnd` | `ScrollViewProps['onMomentumScrollEnd']` | ❌ | Called when momentum scroll animation ends |
 
 #### Usage with BottomSheet
 
@@ -202,9 +287,10 @@ function MyComponent() {
 ### NestableDraggableFlatList Props
 
 | Prop | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
+| ---- | ---- | -------- | ------- | ----------- |
 | `data` | `T[]` | ✅ | - | Array of items to render |
-| `itemHeight` | `number` | ✅ | - | Height of each item (must be consistent) |
+| `itemHeight` | `number` | ❌ | - | Fixed height for all items. If omitted, heights are measured dynamically. |
+| `estimatedItemHeight` | `number` | ❌ | `60` | Estimated item height for initial layout (only used when `itemHeight` is not provided) |
 | `renderItem` | `(params: RenderItemParams<T>) => ReactNode` | ✅ | - | Function to render each item |
 | `keyExtractor` | `(item: T) => string` | ✅ | - | Function to extract unique key from item |
 | `onDragEnd` | `(data: T[]) => void` | ✅ | - | Callback with reordered data after drag ends |
@@ -213,6 +299,22 @@ function MyComponent() {
 | `dragActivationDelay` | `number` | ❌ | `200` | Milliseconds to hold before drag activates |
 | `ListHeaderComponent` | `ReactNode` | ❌ | - | Component rendered above list items |
 | `ListFooterComponent` | `ReactNode` | ❌ | - | Component rendered below list items |
+| `autoScrollThreshold` | `number` | ❌ | `100` | Distance from edge (in px) to trigger auto-scroll |
+| `autoScrollMaxSpeed` | `number` | ❌ | `12` | Maximum auto-scroll speed (px per frame) |
+| `autoScrollMinSpeed` | `number` | ❌ | `1` | Minimum auto-scroll speed (px per frame) |
+| `autoScrollSmoothing` | `number` | ❌ | `0.15` | Smoothing factor for velocity transitions (0-1). Lower = smoother. |
+
+### DragDisabledZone
+
+A wrapper component that prevents drag activation on its children. Use this for buttons, inputs, or other interactive elements within draggable items.
+
+```tsx
+import { DragDisabledZone } from 'react-native-reanimated-drag-list';
+
+<DragDisabledZone>
+  <Button onPress={handlePress} title="Click me" />
+</DragDisabledZone>
+```
 
 ### RenderItemParams
 

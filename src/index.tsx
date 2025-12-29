@@ -9,6 +9,9 @@ export type { RenderItemParams, DraggableListProps } from './types';
 // ------------------------------------------------------------------
 export { NestableScrollContainer } from './NestableScrollContainer';
 export type { NestableScrollContainerProps } from './NestableScrollContainer';
-export { NestableDraggableFlatList } from './NestableDraggableFlatList';
+export {
+  NestableDraggableFlatList,
+  DragDisabledZone,
+} from './NestableDraggableFlatList';
 export type { NestableDraggableFlatListProps } from './NestableDraggableFlatList';
 export type { RenderItemParams as NestableRenderItemParams } from './NestableDraggableFlatList';

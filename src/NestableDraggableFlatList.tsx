@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { createContext, useContext, useMemo } from 'react';
 import { StyleSheet, View, type ViewStyle } from 'react-native';
 import Animated, {
   useAnimatedReaction,
@@ -10,6 +10,7 @@ import Animated, {
   useFrameCallback,
   scrollTo,
   measure,
+  runOnUI,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -25,6 +26,52 @@ const AUTO_SCROLL_MIN_SPEED = 1;
 const AUTO_SCROLL_SMOOTHING = 0.15; // Lower = smoother transitions (0-1)
 const DEFAULT_DRAG_ACTIVATION_DELAY = 200;
 const SWAP_THRESHOLD = 0.5;
+const DEFAULT_ESTIMATED_ITEM_HEIGHT = 60;
+
+// ------------------------------------------------------------------
+// DRAG DISABLED ZONE CONTEXT & COMPONENT
+// ------------------------------------------------------------------
+type DragDisabledContextType = {
+  isDragDisabled: boolean;
+};
+
+const DragDisabledContext = createContext<DragDisabledContextType>({
+  isDragDisabled: false,
+});
+
+/**
+ * Wrap content that should NOT trigger drag activation.
+ * Useful for buttons, inputs, or other interactive elements within draggable items.
+ *
+ * @example
+ * ```tsx
+ * renderItem={({ item, drag }) => (
+ *   <View>
+ *     <Text>{item.title}</Text>
+ *     <DragDisabledZone>
+ *       <Button onPress={() => deleteItem(item.id)} title="Delete" />
+ *     </DragDisabledZone>
+ *   </View>
+ * )}
+ * ```
+ */
+export function DragDisabledZone({ children }: { children: React.ReactNode }) {
+  // Use a Native gesture to capture touches and prevent them from
+  // bubbling up to the Pan gesture that activates drag
+  const nativeGesture = Gesture.Native();
+
+  return (
+    <DragDisabledContext.Provider value={{ isDragDisabled: true }}>
+      <GestureDetector gesture={nativeGesture}>
+        <View>{children}</View>
+      </GestureDetector>
+    </DragDisabledContext.Provider>
+  );
+}
+
+export function useDragDisabled() {
+  return useContext(DragDisabledContext).isDragDisabled;
+}
 
 // ------------------------------------------------------------------
 // TYPES
@@ -38,7 +85,10 @@ export type RenderItemParams<T> = {
 
 export type NestableDraggableFlatListProps<T> = {
   data: T[];
-  itemHeight: number;
+  /** Fixed height for all items (optional - if not provided, heights are measured dynamically) */
+  itemHeight?: number;
+  /** Estimated item height for initial layout before measurement (default: 60) */
+  estimatedItemHeight?: number;
   renderItem: (params: RenderItemParams<T>) => React.ReactNode;
   onDragEnd: (data: T[]) => void;
   keyExtractor: (item: T) => string;
@@ -60,6 +110,53 @@ export type NestableDraggableFlatListProps<T> = {
 };
 
 // ------------------------------------------------------------------
+// HELPER: Calculate item offset from heights
+// ------------------------------------------------------------------
+function getItemOffset(
+  heights: Record<string, number>,
+  positions: Record<string, number>,
+  targetPosition: number,
+  keys: string[],
+  estimatedHeight: number
+): number {
+  'worklet';
+  let offset = 0;
+  for (let i = 0; i < targetPosition; i++) {
+    const keyAtPosition = keys.find((k) => positions[k] === i);
+    if (keyAtPosition) {
+      offset += heights[keyAtPosition] ?? estimatedHeight;
+    } else {
+      offset += estimatedHeight;
+    }
+  }
+  return offset;
+}
+
+// Find which position an offset falls into
+function getPositionAtOffset(
+  heights: Record<string, number>,
+  positions: Record<string, number>,
+  offset: number,
+  keys: string[],
+  totalCount: number,
+  estimatedHeight: number
+): number {
+  'worklet';
+  let cumulative = 0;
+  for (let i = 0; i < totalCount; i++) {
+    const keyAtPosition = keys.find((k) => positions[k] === i);
+    const height = keyAtPosition
+      ? heights[keyAtPosition] ?? estimatedHeight
+      : estimatedHeight;
+    if (offset < cumulative + height) {
+      return i;
+    }
+    cumulative += height;
+  }
+  return totalCount - 1;
+}
+
+// ------------------------------------------------------------------
 // NESTABLE DRAGGABLE ITEM WRAPPER
 // ------------------------------------------------------------------
 type NestableDraggableItemProps = {
@@ -67,8 +164,10 @@ type NestableDraggableItemProps = {
   index: number;
   child: React.ReactNode;
   positions: SharedValue<Record<string, number>>;
+  heights: SharedValue<Record<string, number>>;
   scrollY: SharedValue<number>;
-  itemHeight: number;
+  fixedItemHeight: number | undefined;
+  estimatedItemHeight: number;
   totalCount: number;
   onDragFinalize: () => void;
   containerHeight: SharedValue<number>;
@@ -81,6 +180,8 @@ type NestableDraggableItemProps = {
   autoScrollMaxSpeed: number;
   autoScrollMinSpeed: number;
   autoScrollSmoothing: number;
+  allKeys: string[];
+  onHeightMeasured: (id: string, height: number) => void;
 };
 
 const NestableDraggableItem = ({
@@ -88,8 +189,10 @@ const NestableDraggableItem = ({
   index,
   child,
   positions,
+  heights,
   scrollY,
-  itemHeight,
+  fixedItemHeight,
+  estimatedItemHeight,
   totalCount,
   onDragFinalize,
   containerHeight,
@@ -102,11 +205,23 @@ const NestableDraggableItem = ({
   autoScrollMaxSpeed,
   autoScrollMinSpeed,
   autoScrollSmoothing,
+  allKeys,
+  onHeightMeasured,
 }: NestableDraggableItemProps) => {
   const isDragging = useSharedValue(false);
   // Track when item is settling to final position (prevents reaction interference)
   const isSettling = useSharedValue(false);
-  const top = useSharedValue(index * itemHeight);
+
+  // Calculate initial offset
+  const initialOffset = useMemo(() => {
+    if (fixedItemHeight !== undefined) {
+      return index * fixedItemHeight;
+    }
+    // For dynamic heights, start at estimated position
+    return index * estimatedItemHeight;
+  }, [index, fixedItemHeight, estimatedItemHeight]);
+
+  const top = useSharedValue(initialOffset);
 
   const startY = useSharedValue(0);
   const startTop = useSharedValue(0);
@@ -115,15 +230,43 @@ const NestableDraggableItem = ({
   // Smoothed scroll velocity for butter-smooth autoscroll
   const currentScrollVelocity = useSharedValue(0);
 
+  // Get item height (fixed or measured)
+  const getItemHeight = (itemId: string) => {
+    'worklet';
+    if (fixedItemHeight !== undefined) {
+      return fixedItemHeight;
+    }
+    return heights.value[itemId] ?? estimatedItemHeight;
+  };
+
+  // Calculate offset for a position
+  const calculateOffset = (position: number) => {
+    'worklet';
+    if (fixedItemHeight !== undefined) {
+      return position * fixedItemHeight;
+    }
+    return getItemOffset(
+      heights.value,
+      positions.value,
+      position,
+      allKeys,
+      estimatedItemHeight
+    );
+  };
+
   // Sync position with index on mount and when not actively dragging
   useAnimatedReaction(
-    () => index,
-    (currentIndex) => {
-      if (!isDragging.value && !isSettling.value) {
-        top.value = currentIndex * itemHeight;
+    () => ({
+      pos: positions.value[id],
+      h: heights.value,
+    }),
+    (current) => {
+      if (!isDragging.value && !isSettling.value && current.pos !== undefined) {
+        const targetOffset = calculateOffset(current.pos);
+        top.value = targetOffset;
       }
     },
-    [index, itemHeight]
+    [id, allKeys, fixedItemHeight, estimatedItemHeight]
   );
 
   // Calculate target scroll speed using smooth easing
@@ -235,8 +378,8 @@ const NestableDraggableItem = ({
       startY.value = e.absoluteY;
       startScrollY.value = scrollY.value;
       currentFingerY.value = e.absoluteY;
-      const currentIndex = positions.value[id] ?? 0;
-      startTop.value = currentIndex * itemHeight;
+      const currentPosition = positions.value[id] ?? 0;
+      startTop.value = calculateOffset(currentPosition);
       // Ensure we start from the correct position
       top.value = startTop.value;
     })
@@ -247,29 +390,40 @@ const NestableDraggableItem = ({
       const deltaScroll = scrollY.value - startScrollY.value;
       top.value = startTop.value + deltaY + deltaScroll;
 
-      const currentIndex = positions.value[id] ?? 0;
-      const currentTop = currentIndex * itemHeight;
-      const displacement = top.value - currentTop;
-      const thresholdDistance = itemHeight * SWAP_THRESHOLD;
+      const currentPosition = positions.value[id] ?? 0;
+      const currentItemHeight = getItemHeight(id);
+      const currentOffset = calculateOffset(currentPosition);
+      const displacement = top.value - currentOffset;
+
+      // Use dynamic threshold based on item heights
+      const thresholdDistance = currentItemHeight * SWAP_THRESHOLD;
 
       if (Math.abs(displacement) > thresholdDistance) {
-        const targetIndex =
-          displacement > 0 ? currentIndex + 1 : currentIndex - 1;
-        const clampedTargetIndex = Math.max(
-          0,
-          Math.min(targetIndex, totalCount - 1)
+        // Find the position at the center of the dragged item
+        const draggedCenter = top.value + currentItemHeight / 2;
+        const targetPosition = getPositionAtOffset(
+          heights.value,
+          positions.value,
+          draggedCenter,
+          allKeys,
+          totalCount,
+          fixedItemHeight ?? estimatedItemHeight
         );
 
-        if (clampedTargetIndex !== currentIndex) {
-          const objectKeys = Object.keys(positions.value);
-          const itemToSwapId = objectKeys.find(
-            (key) => positions.value[key] === clampedTargetIndex
+        const clampedTargetPosition = Math.max(
+          0,
+          Math.min(targetPosition, totalCount - 1)
+        );
+
+        if (clampedTargetPosition !== currentPosition) {
+          const itemToSwapId = allKeys.find(
+            (key) => positions.value[key] === clampedTargetPosition
           );
 
           if (itemToSwapId && itemToSwapId !== id) {
             const newPositions = { ...positions.value };
-            newPositions[id] = clampedTargetIndex;
-            newPositions[itemToSwapId] = currentIndex;
+            newPositions[id] = clampedTargetPosition;
+            newPositions[itemToSwapId] = currentPosition;
             positions.value = newPositions;
           }
         }
@@ -287,8 +441,8 @@ const NestableDraggableItem = ({
       // Reset scroll velocity
       currentScrollVelocity.value = 0;
 
-      const targetIndex = positions.value[id] ?? 0;
-      const finalTop = targetIndex * itemHeight;
+      const targetPosition = positions.value[id] ?? 0;
+      const finalTop = calculateOffset(targetPosition);
 
       // Animate to final position with callback
       top.value = withSpring(
@@ -321,7 +475,8 @@ const NestableDraggableItem = ({
         !isSettling.value &&
         currentPosition !== undefined
       ) {
-        top.value = withSpring(currentPosition * itemHeight, {
+        const targetOffset = calculateOffset(currentPosition);
+        top.value = withSpring(targetOffset, {
           damping: 40,
           stiffness: 350,
         });
@@ -343,10 +498,26 @@ const NestableDraggableItem = ({
     };
   });
 
+  // Handle layout measurement for dynamic heights
+  const handleLayout = React.useCallback(
+    (event: { nativeEvent: { layout: { height: number } } }) => {
+      if (fixedItemHeight === undefined) {
+        const measuredHeight = event.nativeEvent.layout.height;
+        onHeightMeasured(id, measuredHeight);
+      }
+    },
+    [id, fixedItemHeight, onHeightMeasured]
+  );
+
   return (
     <GestureDetector gesture={pan}>
       <Animated.View
-        style={[styles.itemContainer, { height: itemHeight }, animatedStyle]}
+        onLayout={handleLayout}
+        style={[
+          styles.itemContainer,
+          fixedItemHeight !== undefined && { height: fixedItemHeight },
+          animatedStyle,
+        ]}
       >
         {child}
       </Animated.View>
@@ -359,7 +530,8 @@ const NestableDraggableItem = ({
 // ------------------------------------------------------------------
 export function NestableDraggableFlatList<T extends { id?: string | number }>({
   data,
-  itemHeight,
+  itemHeight: fixedItemHeight,
+  estimatedItemHeight = DEFAULT_ESTIMATED_ITEM_HEIGHT,
   renderItem,
   onDragEnd,
   keyExtractor,
@@ -382,11 +554,60 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
     contentHeight,
   } = useNestableScrollContainerContext();
 
+  // All item keys for position/height lookups
+  const allKeys = useMemo(
+    () => data.map((item) => keyExtractor(item)),
+    [data, keyExtractor]
+  );
+
   const positions = useSharedValue<Record<string, number>>(
     Object.fromEntries(data.map((item, index) => [keyExtractor(item), index]))
   );
 
-  const listContentHeight = data.length * itemHeight;
+  // Track measured heights for dynamic sizing
+  const heights = useSharedValue<Record<string, number>>({});
+
+  // Calculate total list height
+  const listContentHeight = useMemo(() => {
+    if (fixedItemHeight !== undefined) {
+      return data.length * fixedItemHeight;
+    }
+    // For dynamic heights, use estimated height initially
+    // The actual height will be updated as items are measured
+    return data.length * estimatedItemHeight;
+  }, [data.length, fixedItemHeight, estimatedItemHeight]);
+
+  // Track measured total height for dynamic lists
+  const [measuredTotalHeight, setMeasuredTotalHeight] =
+    React.useState(listContentHeight);
+
+  // Update measured total height when heights change
+  const updateTotalHeight = React.useCallback(() => {
+    if (fixedItemHeight !== undefined) return;
+
+    const currentHeights = heights.value;
+    let total = 0;
+    for (const key of allKeys) {
+      total += currentHeights[key] ?? estimatedItemHeight;
+    }
+    setMeasuredTotalHeight(total);
+  }, [allKeys, estimatedItemHeight, fixedItemHeight, heights]);
+
+  // Handle height measurement from items
+  const handleHeightMeasured = React.useCallback(
+    (id: string, height: number) => {
+      const currentHeight = heights.value[id];
+      if (currentHeight !== height) {
+        // Update on UI thread
+        runOnUI(() => {
+          heights.value = { ...heights.value, [id]: height };
+        })();
+        // Update total height on JS thread
+        setTimeout(updateTotalHeight, 0);
+      }
+    },
+    [heights, updateTotalHeight]
+  );
 
   // Update positions when data changes
   React.useEffect(() => {
@@ -401,14 +622,17 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
 
     data.forEach((item) => {
       const key = keyExtractor(item);
-      const index = currentPositions[key];
-      if (index !== undefined) {
-        newOrder[index] = item;
+      const position = currentPositions[key];
+      if (position !== undefined) {
+        newOrder[position] = item;
       }
     });
 
     onDragEnd(newOrder);
   };
+
+  const actualHeight =
+    fixedItemHeight !== undefined ? listContentHeight : measuredTotalHeight;
 
   return (
     <View style={style}>
@@ -417,7 +641,7 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
         style={[
           styles.listContainer,
           contentContainerStyle,
-          { height: listContentHeight },
+          { height: actualHeight },
         ]}
       >
         {data.map((item, index) => {
@@ -428,8 +652,10 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               id={key}
               index={index}
               positions={positions}
+              heights={heights}
               scrollY={scrollY}
-              itemHeight={itemHeight}
+              fixedItemHeight={fixedItemHeight}
+              estimatedItemHeight={estimatedItemHeight}
               totalCount={data.length}
               onDragFinalize={handleDragFinalize}
               containerHeight={containerHeight}
@@ -442,6 +668,8 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               autoScrollMaxSpeed={autoScrollMaxSpeed}
               autoScrollMinSpeed={autoScrollMinSpeed}
               autoScrollSmoothing={autoScrollSmoothing}
+              allKeys={allKeys}
+              onHeightMeasured={handleHeightMeasured}
               child={renderItem({
                 item,
                 index,

@@ -1,4 +1,9 @@
-import React, { useEffect, useCallback } from 'react';
+import React, {
+  useEffect,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import type { ScrollViewProps, LayoutChangeEvent } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -30,20 +35,32 @@ export type NestableScrollContainerProps = ScrollViewProps & {
 // ------------------------------------------------------------------
 // NESTABLE SCROLL CONTAINER
 // ------------------------------------------------------------------
-export function NestableScrollContainer({
-  children,
-  onScroll: onScrollProp,
-  onLayout: onLayoutProp,
-  onContentSizeChange: onContentSizeChangeProp,
-  measureKey,
-  ...scrollViewProps
-}: NestableScrollContainerProps) {
+export const NestableScrollContainer = forwardRef<
+  any,
+  NestableScrollContainerProps
+>(function NestableScrollContainer(
+  {
+    children,
+    onScroll: onScrollProp,
+    onScrollBeginDrag: onScrollBeginDragProp,
+    onScrollEndDrag: onScrollEndDragProp,
+    onMomentumScrollEnd: onMomentumScrollEndProp,
+    onLayout: onLayoutProp,
+    onContentSizeChange: onContentSizeChangeProp,
+    measureKey,
+    ...scrollViewProps
+  },
+  ref
+) {
   const scrollY = useSharedValue(0);
   const containerHeight = useSharedValue(0);
   const containerTop = useSharedValue(0);
   const contentHeight = useSharedValue(0);
   const outerScrollEnabled = useSharedValue(true);
   const scrollViewRef = useAnimatedRef<any>();
+
+  // Forward the internal ref to the external ref
+  useImperativeHandle(ref, () => scrollViewRef.current, [scrollViewRef]);
 
   // Suppress nested list warnings when component mounts
   useEffect(() => {
@@ -79,6 +96,27 @@ export function NestableScrollContainer({
     [onScrollProp]
   );
 
+  const callOnScrollBeginDragProp = useCallback(
+    (event: any) => {
+      onScrollBeginDragProp?.(event);
+    },
+    [onScrollBeginDragProp]
+  );
+
+  const callOnScrollEndDragProp = useCallback(
+    (event: any) => {
+      onScrollEndDragProp?.(event);
+    },
+    [onScrollEndDragProp]
+  );
+
+  const callOnMomentumScrollEndProp = useCallback(
+    (event: any) => {
+      onMomentumScrollEndProp?.(event);
+    },
+    [onMomentumScrollEndProp]
+  );
+
   // Animated scroll handler
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
@@ -87,6 +125,27 @@ export function NestableScrollContainer({
         // Call the user's onScroll handler on the JS thread
         scheduleOnRN(() => {
           callOnScrollProp({ nativeEvent: event });
+        });
+      }
+    },
+    onBeginDrag: (event) => {
+      if (onScrollBeginDragProp) {
+        scheduleOnRN(() => {
+          callOnScrollBeginDragProp({ nativeEvent: event });
+        });
+      }
+    },
+    onEndDrag: (event) => {
+      if (onScrollEndDragProp) {
+        scheduleOnRN(() => {
+          callOnScrollEndDragProp({ nativeEvent: event });
+        });
+      }
+    },
+    onMomentumEnd: (event) => {
+      if (onMomentumScrollEndProp) {
+        scheduleOnRN(() => {
+          callOnMomentumScrollEndProp({ nativeEvent: event });
         });
       }
     },
@@ -136,4 +195,4 @@ export function NestableScrollContainer({
       </AnimatedScrollView>
     </NestableScrollContainerContext.Provider>
   );
-}
+});
