@@ -6,8 +6,8 @@ import Animated, {
   withSpring,
   useFrameCallback,
   scrollTo,
+  runOnJS,
 } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 import type { DraggableItemProps } from './types';
@@ -220,7 +220,7 @@ export const DraggableItem = ({
         (finished) => {
           if (finished) {
             isSettling.value = false;
-            scheduleOnRN(onDragFinalize);
+            runOnJS(onDragFinalize)();
           }
         }
       );

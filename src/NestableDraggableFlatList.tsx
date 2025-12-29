@@ -11,8 +11,8 @@ import Animated, {
   scrollTo,
   measure,
   runOnUI,
+  runOnJS,
 } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 import { useNestableScrollContainerContext } from './NestableContext';
@@ -451,7 +451,7 @@ const NestableDraggableItem = ({
         (finished) => {
           if (finished) {
             isSettling.value = false;
-            scheduleOnRN(onDragFinalize);
+            runOnJS(onDragFinalize)();
           }
         }
       );

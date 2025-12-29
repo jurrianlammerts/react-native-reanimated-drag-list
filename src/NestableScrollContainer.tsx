@@ -10,8 +10,9 @@ import Animated, {
   useAnimatedRef,
   useAnimatedScrollHandler,
   measure,
+  runOnJS,
+  runOnUI,
 } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
 import { ScrollView } from 'react-native-gesture-handler';
 
 import {
@@ -101,13 +102,13 @@ export const NestableScrollContainer = forwardRef<
     }
     // Longer delay to allow BottomSheet animations to complete (~300ms typical)
     const timeoutId = setTimeout(() => {
-      scheduleOnRN(() => {
+      runOnUI(() => {
         const measurement = measure(scrollViewRef);
         if (measurement) {
           containerTop.value = measurement.pageY;
           containerHeight.value = measurement.height;
         }
-      });
+      })();
     }, 350);
     return () => clearTimeout(timeoutId);
   }, [measureKey, scrollViewRef, containerTop, containerHeight]);
@@ -143,34 +144,27 @@ export const NestableScrollContainer = forwardRef<
   // Animated scroll handler
   // Note: We use shared values (hasOn*Prop) to check if callbacks exist
   // because worklets run on the UI thread and can't access JS values directly
+  // We use runOnJS to call JS callbacks from the UI thread
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
       scrollY.value = event.contentOffset.y;
       if (hasOnScrollProp.value) {
-        scheduleOnRN(() => {
-          callOnScrollProp({ nativeEvent: event });
-        });
+        runOnJS(callOnScrollProp)({ nativeEvent: event });
       }
     },
     onBeginDrag: (event) => {
       if (hasOnScrollBeginDragProp.value) {
-        scheduleOnRN(() => {
-          callOnScrollBeginDragProp({ nativeEvent: event });
-        });
+        runOnJS(callOnScrollBeginDragProp)({ nativeEvent: event });
       }
     },
     onEndDrag: (event) => {
       if (hasOnScrollEndDragProp.value) {
-        scheduleOnRN(() => {
-          callOnScrollEndDragProp({ nativeEvent: event });
-        });
+        runOnJS(callOnScrollEndDragProp)({ nativeEvent: event });
       }
     },
     onMomentumEnd: (event) => {
       if (hasOnMomentumScrollEndProp.value) {
-        scheduleOnRN(() => {
-          callOnMomentumScrollEndProp({ nativeEvent: event });
-        });
+        runOnJS(callOnMomentumScrollEndProp)({ nativeEvent: event });
       }
     },
   });
@@ -179,12 +173,12 @@ export const NestableScrollContainer = forwardRef<
     (e: LayoutChangeEvent) => {
       containerHeight.value = e.nativeEvent.layout.height;
       // Measure the container's position on screen using reanimated
-      scheduleOnRN(() => {
+      runOnUI(() => {
         const measurement = measure(scrollViewRef);
         if (measurement) {
           containerTop.value = measurement.pageY;
         }
-      });
+      })();
       onLayoutProp?.(e);
     },
     [containerHeight, containerTop, scrollViewRef, onLayoutProp]

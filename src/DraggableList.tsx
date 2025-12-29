@@ -3,8 +3,8 @@ import Animated, {
   useSharedValue,
   useAnimatedRef,
   measure,
+  runOnUI,
 } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
 
 import { DraggableItem } from './DraggableItem';
 import type { DraggableListProps } from './types';
@@ -54,12 +54,12 @@ export function DraggableList<T extends { id?: string | number }>({
   const onLayout = (e: LayoutChangeEvent) => {
     containerHeight.value = e.nativeEvent.layout.height;
     // Measure the container's position on screen using reanimated
-    scheduleOnRN(() => {
+    runOnUI(() => {
       const measurement = measure(scrollViewRef);
       if (measurement) {
         containerTop.value = measurement.pageY;
       }
-    });
+    })();
   };
 
   return (
