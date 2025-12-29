@@ -79,10 +79,12 @@ function BasicListDemo() {
 
   return (
     <View style={styles.demoContainer}>
-      <Text style={styles.demoTitle}>DraggableList</Text>
-      <Text style={styles.demoDescription}>
-        A single scrollable list with draggable items
-      </Text>
+      <View style={styles.demoHeader}>
+        <Text style={styles.demoTitle}>DraggableList</Text>
+        <Text style={styles.demoDescription}>
+          A single scrollable list with draggable items
+        </Text>
+      </View>
       <DraggableList
         data={data}
         itemHeight={70}
@@ -120,10 +122,12 @@ function NestableListDemo() {
 
   return (
     <View style={styles.demoContainer}>
-      <Text style={styles.demoTitle}>NestableDraggableFlatList</Text>
-      <Text style={styles.demoDescription}>
-        Multiple draggable lists in a single scroll container
-      </Text>
+      <View style={styles.demoHeader}>
+        <Text style={styles.demoTitle}>NestableDraggableFlatList</Text>
+        <Text style={styles.demoDescription}>
+          Multiple draggable lists in a single scroll container
+        </Text>
+      </View>
       <NestableScrollContainer style={styles.nestableContainer}>
         <SectionHeader text="🛒 Groceries" />
         <NestableDraggableFlatList
@@ -168,7 +172,7 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={styles.root}>
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
         <View style={styles.container}>
           {/* Header */}
           <View style={styles.header}>
@@ -264,13 +268,15 @@ const styles = StyleSheet.create({
   },
   demoContainer: {
     flex: 1,
-    paddingHorizontal: 20,
   },
   demoTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: '#fff',
     marginBottom: 4,
+  },
+  demoHeader: {
+    paddingHorizontal: 20,
   },
   demoDescription: {
     fontSize: 13,
@@ -281,13 +287,14 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 16,
     overflow: 'hidden',
+    paddingHorizontal: 20,
   },
   nestableContainer: {
     flex: 1,
+    paddingHorizontal: 20,
   },
   sectionHeader: {
     paddingVertical: 14,
-    paddingHorizontal: 4,
     marginTop: 8,
   },
   sectionHeaderText: {
