@@ -7,7 +7,7 @@ A high-performance draggable list component for React Native, built with Reanima
 - 🚀 **UI Thread Performance** - All animations run on the UI thread via Reanimated
 - 📜 **Progressive Auto-scroll** - Automatically scrolls when dragging near edges with exponential speed curve
 - ⏱️ **Long Press Activation** - Hold to drag, tap to scroll - configurable delay
-- 🎯 **Smooth Animations** - Spring animations for natural feeling interactions
+- 🎯 **Smooth Animations** - Tuned swap springs and timing-based drop settle (no overshoot)
 - 📱 **Fabric Ready** - Built for the new React Native architecture
 - 🪆 **Nestable Lists** - Multiple draggable lists within a single scrollable container
 - 📏 **Dynamic Heights** - Support for items with variable heights
@@ -198,10 +198,10 @@ function App() {
   const [items, setItems] = useState(data);
 
   const renderItem = ({ item }) => (
-    <View style={styles.item}>
+    <View style={[styles.item, { position: 'relative' }]}>
       <Text>{item.title}</Text>
       <DragDisabledZone>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.deleteButton}
           onPress={() => deleteItem(item.id)}
         >
@@ -239,6 +239,11 @@ function App() {
 | `style` | `ViewStyle` | ❌ | - | Style for the ScrollView container |
 | `contentContainerStyle` | `ViewStyle` | ❌ | - | Style for the content container |
 | `dragActivationDelay` | `number` | ❌ | `200` | Milliseconds to hold before drag activates |
+| `itemSpringConfig` | `WithSpringConfig` | ❌ | `{ damping: 80, stiffness: 500 }` | Spring for swap shifts and scale return |
+| `dropAnimation` | `'spring' \| 'timing'` | ❌ | `'timing'` | How the dragged item settles on release |
+| `dropTimingConfig` | `WithTimingConfig` | ❌ | `{ duration: 180 }` | Timing config when `dropAnimation` is `'timing'` |
+| `dropSpringConfig` | `WithSpringConfig` | ❌ | `{ damping: 40, stiffness: 350 }` | Spring config when `dropAnimation` is `'spring'` |
+| `activeScale` | `number` | ❌ | `1.03` | Scale applied while an item is actively dragged |
 
 ### NestableScrollContainer Props
 
@@ -303,17 +308,31 @@ function MyComponent() {
 | `autoScrollMaxSpeed` | `number` | ❌ | `12` | Maximum auto-scroll speed (px per frame) |
 | `autoScrollMinSpeed` | `number` | ❌ | `1` | Minimum auto-scroll speed (px per frame) |
 | `autoScrollSmoothing` | `number` | ❌ | `0.15` | Smoothing factor for velocity transitions (0-1). Lower = smoother. |
+| `itemSpringConfig` | `WithSpringConfig` | ❌ | `{ damping: 80, stiffness: 500 }` | Spring for swap shifts and scale return |
+| `dropAnimation` | `'spring' \| 'timing'` | ❌ | `'timing'` | How the dragged item settles on release |
+| `dropTimingConfig` | `WithTimingConfig` | ❌ | `{ duration: 180 }` | Timing config when `dropAnimation` is `'timing'` |
+| `dropSpringConfig` | `WithSpringConfig` | ❌ | `{ damping: 40, stiffness: 350 }` | Spring config when `dropAnimation` is `'spring'` |
+| `activeScale` | `number` | ❌ | `1.03` | Scale applied while an item is actively dragged |
 
 ### DragDisabledZone
 
 A wrapper component that prevents drag activation on its children. Use this for buttons, inputs, or other interactive elements within draggable items.
 
+The zone uses `position: 'absolute'` with `absoluteFillObject` so it does not shift siblings in normal layout flow. Put overlays (e.g. delete buttons with `position: 'absolute'`) inside the zone, and give the item root `position: 'relative'`.
+
+Optional `style` prop for custom placement (e.g. `top` / `right` on a corner overlay instead of full-bleed).
+
 ```tsx
 import { DragDisabledZone } from 'react-native-reanimated-drag-list';
 
-<DragDisabledZone>
-  <Button onPress={handlePress} title="Click me" />
-</DragDisabledZone>
+<View style={{ position: 'relative' }}>
+  <Image source={photo} />
+  <DragDisabledZone>
+    <Pressable style={{ position: 'absolute', top: 8, right: 8 }} onPress={onDelete}>
+      <Icon name="trash" />
+    </Pressable>
+  </DragDisabledZone>
+</View>
 ```
 
 ### RenderItemParams
@@ -323,9 +342,11 @@ type RenderItemParams<T> = {
   item: T;           // The item data
   index: number;     // Current index in the list
   drag: () => void;  // Function to initiate drag (for custom handles)
-  isActive: boolean; // Whether this item is being dragged
+  isActive: boolean; // Reserved for custom handles; currently always false (drag feedback uses internal scale)
 };
 ```
+
+Positions reset automatically when `data` key order or membership changes (e.g. after a server refetch). If you reorder optimistically in `onDragEnd`, keep local state in sync so keys match the new order.
 
 ## How It Works
 

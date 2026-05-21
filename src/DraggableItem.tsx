@@ -4,6 +4,7 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
+  withTiming,
   useFrameCallback,
   scrollTo,
   runOnJS,
@@ -16,6 +17,10 @@ import {
   AUTO_SCROLL_MAX_SPEED,
   AUTO_SCROLL_MIN_SPEED,
   SWAP_THRESHOLD,
+  DEFAULT_ITEM_SPRING,
+  DEFAULT_DROP_TIMING,
+  DEFAULT_ACTIVE_SCALE,
+  LEGACY_DROP_SPRING,
 } from './constants';
 
 export const DraggableItem = ({
@@ -32,6 +37,11 @@ export const DraggableItem = ({
   contentHeight,
   scrollViewRef,
   dragActivationDelay,
+  itemSpringConfig = DEFAULT_ITEM_SPRING,
+  dropAnimation = 'timing',
+  dropTimingConfig = DEFAULT_DROP_TIMING,
+  dropSpringConfig = LEGACY_DROP_SPRING,
+  activeScale = DEFAULT_ACTIVE_SCALE,
 }: DraggableItemProps) => {
   const isDragging = useSharedValue(false);
   // Track when item is settling to final position (prevents reaction interference)
@@ -213,17 +223,19 @@ export const DraggableItem = ({
       const targetIndex = positions.value[id] ?? 0;
       const finalTop = targetIndex * itemHeight;
 
-      // Animate to final position with callback
-      top.value = withSpring(
-        finalTop,
-        { damping: 40, stiffness: 350 },
-        (finished) => {
-          if (finished) {
-            isSettling.value = false;
-            runOnJS(onDragFinalize)();
-          }
+      const onDropFinished = (finished?: boolean) => {
+        'worklet';
+        if (finished) {
+          isSettling.value = false;
+          runOnJS(onDragFinalize)();
         }
-      );
+      };
+
+      if (dropAnimation === 'spring') {
+        top.value = withSpring(finalTop, dropSpringConfig, onDropFinished);
+      } else {
+        top.value = withTiming(finalTop, dropTimingConfig, onDropFinished);
+      }
     });
 
   // React to position changes from other items swapping
@@ -241,10 +253,7 @@ export const DraggableItem = ({
         !isSettling.value &&
         currentPosition !== undefined
       ) {
-        top.value = withSpring(currentPosition * itemHeight, {
-          damping: 40,
-          stiffness: 350,
-        });
+        top.value = withSpring(currentPosition * itemHeight, itemSpringConfig);
       }
     }
   );
@@ -256,8 +265,8 @@ export const DraggableItem = ({
       transform: [
         {
           scale: isDragging.value
-            ? 1.05
-            : withSpring(1, { damping: 40, stiffness: 350 }),
+            ? activeScale
+            : withSpring(1, itemSpringConfig),
         },
       ],
     };

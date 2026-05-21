@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useMemo } from 'react';
-import { StyleSheet, View, type ViewStyle } from 'react-native';
+import { StyleSheet, View, type ViewStyle, type StyleProp } from 'react-native';
 import Animated, {
   useAnimatedReaction,
   useSharedValue,
   useAnimatedStyle,
   withSpring,
+  withTiming,
   type SharedValue,
   type AnimatedRef,
   useFrameCallback,
@@ -16,6 +17,13 @@ import Animated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 import { useNestableScrollContainerContext } from './NestableContext';
+import {
+  DEFAULT_ITEM_SPRING,
+  DEFAULT_DROP_TIMING,
+  DEFAULT_ACTIVE_SCALE,
+  LEGACY_DROP_SPRING,
+} from './constants';
+import type { ItemAnimationConfig } from './types';
 
 // ------------------------------------------------------------------
 // CONFIGURATION
@@ -55,7 +63,14 @@ const DragDisabledContext = createContext<DragDisabledContextType>({
  * )}
  * ```
  */
-export function DragDisabledZone({ children }: { children: React.ReactNode }) {
+export function DragDisabledZone({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  /** Optional layout for the overlay; defaults to absolute fill of the item */
+  style?: StyleProp<ViewStyle>;
+}) {
   // Use a Native gesture to capture touches and prevent them from
   // bubbling up to the Pan gesture that activates drag
   const nativeGesture = Gesture.Native();
@@ -63,7 +78,9 @@ export function DragDisabledZone({ children }: { children: React.ReactNode }) {
   return (
     <DragDisabledContext.Provider value={{ isDragDisabled: true }}>
       <GestureDetector gesture={nativeGesture}>
-        <View>{children}</View>
+        <View style={[styles.dragDisabledZone, style]} pointerEvents="box-none">
+          {children}
+        </View>
       </GestureDetector>
     </DragDisabledContext.Provider>
   );
@@ -83,7 +100,7 @@ export type RenderItemParams<T> = {
   index: number;
 };
 
-export type NestableDraggableFlatListProps<T> = {
+export type NestableDraggableFlatListProps<T> = ItemAnimationConfig & {
   data: T[];
   /** Fixed height for all items (optional - if not provided, heights are measured dynamically) */
   itemHeight?: number;
@@ -182,7 +199,7 @@ type NestableDraggableItemProps = {
   autoScrollSmoothing: number;
   allKeys: string[];
   onHeightMeasured: (id: string, height: number) => void;
-};
+} & ItemAnimationConfig;
 
 const NestableDraggableItem = ({
   id,
@@ -207,6 +224,11 @@ const NestableDraggableItem = ({
   autoScrollSmoothing,
   allKeys,
   onHeightMeasured,
+  itemSpringConfig = DEFAULT_ITEM_SPRING,
+  dropAnimation = 'timing',
+  dropTimingConfig = DEFAULT_DROP_TIMING,
+  dropSpringConfig = LEGACY_DROP_SPRING,
+  activeScale = DEFAULT_ACTIVE_SCALE,
 }: NestableDraggableItemProps) => {
   const isDragging = useSharedValue(false);
   // Track when item is settling to final position (prevents reaction interference)
@@ -444,17 +466,19 @@ const NestableDraggableItem = ({
       const targetPosition = positions.value[id] ?? 0;
       const finalTop = calculateOffset(targetPosition);
 
-      // Animate to final position with callback
-      top.value = withSpring(
-        finalTop,
-        { damping: 40, stiffness: 350 },
-        (finished) => {
-          if (finished) {
-            isSettling.value = false;
-            runOnJS(onDragFinalize)();
-          }
+      const onDropFinished = (finished?: boolean) => {
+        'worklet';
+        if (finished) {
+          isSettling.value = false;
+          runOnJS(onDragFinalize)();
         }
-      );
+      };
+
+      if (dropAnimation === 'spring') {
+        top.value = withSpring(finalTop, dropSpringConfig, onDropFinished);
+      } else {
+        top.value = withTiming(finalTop, dropTimingConfig, onDropFinished);
+      }
 
       // Re-enable outer scroll
       outerScrollEnabled.value = true;
@@ -476,10 +500,7 @@ const NestableDraggableItem = ({
         currentPosition !== undefined
       ) {
         const targetOffset = calculateOffset(currentPosition);
-        top.value = withSpring(targetOffset, {
-          damping: 40,
-          stiffness: 350,
-        });
+        top.value = withSpring(targetOffset, itemSpringConfig);
       }
     }
   );
@@ -491,8 +512,8 @@ const NestableDraggableItem = ({
       transform: [
         {
           scale: isDragging.value
-            ? 1.05
-            : withSpring(1, { damping: 40, stiffness: 350 }),
+            ? activeScale
+            : withSpring(1, itemSpringConfig),
         },
       ],
     };
@@ -544,6 +565,11 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
   autoScrollMaxSpeed = AUTO_SCROLL_MAX_SPEED,
   autoScrollMinSpeed = AUTO_SCROLL_MIN_SPEED,
   autoScrollSmoothing = AUTO_SCROLL_SMOOTHING,
+  itemSpringConfig,
+  dropAnimation,
+  dropTimingConfig,
+  dropSpringConfig,
+  activeScale,
 }: NestableDraggableFlatListProps<T>) {
   const {
     scrollY,
@@ -562,6 +588,11 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
 
   const positions = useSharedValue<Record<string, number>>(
     Object.fromEntries(data.map((item, index) => [keyExtractor(item), index]))
+  );
+
+  const dataKeySequence = useMemo(
+    () => data.map((item) => keyExtractor(item)).join('\0'),
+    [data, keyExtractor]
   );
 
   // Track measured heights for dynamic sizing
@@ -609,12 +640,12 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
     [heights, updateTotalHeight]
   );
 
-  // Update positions when data changes
+  // Reset positions when key order or membership changes (e.g. external reorder)
   React.useEffect(() => {
     positions.value = Object.fromEntries(
       data.map((item, index) => [keyExtractor(item), index])
     );
-  }, [data, keyExtractor, positions]);
+  }, [dataKeySequence, data, keyExtractor, positions]);
 
   const handleDragFinalize = () => {
     const newOrder = new Array(data.length);
@@ -670,6 +701,11 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               autoScrollSmoothing={autoScrollSmoothing}
               allKeys={allKeys}
               onHeightMeasured={handleHeightMeasured}
+              itemSpringConfig={itemSpringConfig}
+              dropAnimation={dropAnimation}
+              dropTimingConfig={dropTimingConfig}
+              dropSpringConfig={dropSpringConfig}
+              activeScale={activeScale}
               child={renderItem({
                 item,
                 index,
@@ -693,5 +729,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
+  },
+  dragDisabledZone: {
+    ...StyleSheet.absoluteFillObject,
   },
 });

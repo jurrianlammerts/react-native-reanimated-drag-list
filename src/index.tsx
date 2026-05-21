@@ -2,7 +2,17 @@
 // MAIN EXPORTS
 // ------------------------------------------------------------------
 export { DraggableList } from './DraggableList';
-export type { RenderItemParams, DraggableListProps } from './types';
+export type {
+  RenderItemParams,
+  DraggableListProps,
+  ItemAnimationConfig,
+} from './types';
+export {
+  DEFAULT_ITEM_SPRING,
+  DEFAULT_DROP_TIMING,
+  DEFAULT_ACTIVE_SCALE,
+  LEGACY_DROP_SPRING,
+} from './constants';
 
 // ------------------------------------------------------------------
 // NESTABLE EXPORTS

@@ -1,3 +1,4 @@
+import React, { useMemo } from 'react';
 import { StyleSheet, type LayoutChangeEvent } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -19,11 +20,26 @@ export function DraggableList<T extends { id?: string | number }>({
   style,
   contentContainerStyle,
   dragActivationDelay = DEFAULT_DRAG_ACTIVATION_DELAY,
+  itemSpringConfig,
+  dropAnimation,
+  dropTimingConfig,
+  dropSpringConfig,
+  activeScale,
 }: DraggableListProps<T>) {
-  // Initialize positions map
   const positions = useSharedValue<Record<string, number>>(
     Object.fromEntries(data.map((item, index) => [keyExtractor(item), index]))
   );
+
+  const dataKeySequence = useMemo(
+    () => data.map((item) => keyExtractor(item)).join('\0'),
+    [data, keyExtractor]
+  );
+
+  React.useEffect(() => {
+    positions.value = Object.fromEntries(
+      data.map((item, index) => [keyExtractor(item), index])
+    );
+  }, [dataKeySequence, data, keyExtractor, positions]);
 
   const scrollY = useSharedValue(0);
   const containerHeight = useSharedValue(0);
@@ -92,6 +108,11 @@ export function DraggableList<T extends { id?: string | number }>({
             contentHeight={contentHeight}
             scrollViewRef={scrollViewRef}
             dragActivationDelay={dragActivationDelay}
+            itemSpringConfig={itemSpringConfig}
+            dropAnimation={dropAnimation}
+            dropTimingConfig={dropTimingConfig}
+            dropSpringConfig={dropSpringConfig}
+            activeScale={activeScale}
             child={renderItem({
               item,
               index,
