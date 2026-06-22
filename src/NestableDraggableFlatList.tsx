@@ -108,10 +108,13 @@ export type NestableDraggableFlatListProps<T> = ItemAnimationConfig & {
   estimatedItemHeight?: number;
   renderItem: (params: RenderItemParams<T>) => React.ReactNode;
   onDragEnd: (data: T[]) => void;
+  onDragStart?: (info: { key: string; index: number }) => void;
   keyExtractor: (item: T) => string;
   style?: ViewStyle;
   contentContainerStyle?: ViewStyle;
   dragActivationDelay?: number;
+  /** Fraction of row height required to swap while dragging (default: 0.5) */
+  swapThreshold?: number;
   /** Header component rendered above the list items */
   ListHeaderComponent?: React.ReactNode;
   /** Footer component rendered below the list items */
@@ -173,6 +176,82 @@ function getPositionAtOffset(
   return totalCount - 1;
 }
 
+function swapOneStepTowardTarget(
+  id: string,
+  targetPosition: number,
+  positions: Record<string, number>,
+  allKeys: string[],
+  totalCount: number
+): Record<string, number> {
+  'worklet';
+  const currentPosition = positions[id] ?? 0;
+  const clampedTarget = Math.max(0, Math.min(targetPosition, totalCount - 1));
+
+  if (currentPosition === clampedTarget) {
+    return positions;
+  }
+
+  const nextPosition =
+    currentPosition < clampedTarget ? currentPosition + 1 : currentPosition - 1;
+  const itemToSwapId = allKeys.find((key) => positions[key] === nextPosition);
+
+  if (!itemToSwapId || itemToSwapId === id) {
+    return positions;
+  }
+
+  const newPositions = { ...positions };
+  newPositions[id] = nextPosition;
+  newPositions[itemToSwapId] = currentPosition;
+  return newPositions;
+}
+
+function commitDropPosition(
+  id: string,
+  top: number,
+  getItemHeight: (itemId: string) => number,
+  heights: Record<string, number>,
+  positions: Record<string, number>,
+  allKeys: string[],
+  totalCount: number,
+  fixedItemHeight: number | undefined,
+  estimatedItemHeight: number
+): Record<string, number> {
+  'worklet';
+  const currentItemHeight = getItemHeight(id);
+  const draggedCenter = top + currentItemHeight / 2;
+  const targetPosition = getPositionAtOffset(
+    heights,
+    positions,
+    draggedCenter,
+    allKeys,
+    totalCount,
+    fixedItemHeight ?? estimatedItemHeight
+  );
+  const clampedTarget = Math.max(0, Math.min(targetPosition, totalCount - 1));
+
+  let nextPositions = positions;
+  let currentPosition = nextPositions[id] ?? 0;
+  let guard = 0;
+
+  while (currentPosition !== clampedTarget && guard < totalCount) {
+    nextPositions = swapOneStepTowardTarget(
+      id,
+      clampedTarget,
+      nextPositions,
+      allKeys,
+      totalCount
+    );
+    const updatedPosition = nextPositions[id] ?? 0;
+    if (updatedPosition === currentPosition) {
+      break;
+    }
+    currentPosition = updatedPosition;
+    guard += 1;
+  }
+
+  return nextPositions;
+}
+
 // ------------------------------------------------------------------
 // NESTABLE DRAGGABLE ITEM WRAPPER
 // ------------------------------------------------------------------
@@ -199,6 +278,10 @@ type NestableDraggableItemProps = {
   autoScrollSmoothing: number;
   allKeys: string[];
   onHeightMeasured: (id: string, height: number) => void;
+  swapThreshold: number;
+  onDragStart?: (info: { key: string; index: number }) => void;
+  onSettlingStart?: () => void;
+  onSettlingEnd?: () => void;
 } & ItemAnimationConfig;
 
 const NestableDraggableItem = ({
@@ -224,6 +307,10 @@ const NestableDraggableItem = ({
   autoScrollSmoothing,
   allKeys,
   onHeightMeasured,
+  swapThreshold,
+  onDragStart,
+  onSettlingStart,
+  onSettlingEnd,
   itemSpringConfig = DEFAULT_ITEM_SPRING,
   dropAnimation = 'timing',
   dropTimingConfig = DEFAULT_DROP_TIMING,
@@ -233,6 +320,21 @@ const NestableDraggableItem = ({
   const isDragging = useSharedValue(false);
   // Track when item is settling to final position (prevents reaction interference)
   const isSettling = useSharedValue(false);
+  const didFinalizeRef = React.useRef(false);
+
+  const resetFinalizeGuard = React.useCallback(() => {
+    didFinalizeRef.current = false;
+  }, []);
+
+  const finalizeDrag = React.useCallback(() => {
+    if (didFinalizeRef.current) {
+      return;
+    }
+    didFinalizeRef.current = true;
+    isSettling.value = false;
+    onSettlingEnd?.();
+    onDragFinalize();
+  }, [isSettling, onDragFinalize, onSettlingEnd]);
 
   // Calculate initial offset
   const initialOffset = useMemo(() => {
@@ -404,6 +506,10 @@ const NestableDraggableItem = ({
       startTop.value = calculateOffset(currentPosition);
       // Ensure we start from the correct position
       top.value = startTop.value;
+
+      if (onDragStart) {
+        runOnJS(onDragStart)({ key: id, index });
+      }
     })
     .onUpdate((e: { absoluteY: number }) => {
       currentFingerY.value = e.absoluteY;
@@ -418,7 +524,7 @@ const NestableDraggableItem = ({
       const displacement = top.value - currentOffset;
 
       // Use dynamic threshold based on item heights
-      const thresholdDistance = currentItemHeight * SWAP_THRESHOLD;
+      const thresholdDistance = currentItemHeight * swapThreshold;
 
       if (Math.abs(displacement) > thresholdDistance) {
         // Find the position at the center of the dragged item
@@ -457,20 +563,38 @@ const NestableDraggableItem = ({
         return;
       }
 
+      runOnJS(resetFinalizeGuard)();
+
+      // Commit nearest slot from release position (handles quick release)
+      positions.value = commitDropPosition(
+        id,
+        top.value,
+        getItemHeight,
+        heights.value,
+        positions.value,
+        allKeys,
+        totalCount,
+        fixedItemHeight,
+        estimatedItemHeight
+      );
+
       // Mark as settling before starting animation
       isSettling.value = true;
       isDragging.value = false;
       // Reset scroll velocity
       currentScrollVelocity.value = 0;
 
+      if (onSettlingStart) {
+        runOnJS(onSettlingStart)();
+      }
+
       const targetPosition = positions.value[id] ?? 0;
       const finalTop = calculateOffset(targetPosition);
 
       const onDropFinished = (finished?: boolean) => {
         'worklet';
-        if (finished) {
-          isSettling.value = false;
-          runOnJS(onDragFinalize)();
+        if (finished === false || finished === true) {
+          runOnJS(finalizeDrag)();
         }
       };
 
@@ -555,10 +679,12 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
   estimatedItemHeight = DEFAULT_ESTIMATED_ITEM_HEIGHT,
   renderItem,
   onDragEnd,
+  onDragStart,
   keyExtractor,
   style,
   contentContainerStyle,
   dragActivationDelay = DEFAULT_DRAG_ACTIVATION_DELAY,
+  swapThreshold = SWAP_THRESHOLD,
   ListHeaderComponent,
   ListFooterComponent,
   autoScrollThreshold = AUTO_SCROLL_THRESHOLD,
@@ -611,6 +737,15 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
   // Track measured total height for dynamic lists
   const [measuredTotalHeight, setMeasuredTotalHeight] =
     React.useState(listContentHeight);
+  const [blockPositionReset, setBlockPositionReset] = React.useState(false);
+
+  const handleSettlingStart = React.useCallback(() => {
+    setBlockPositionReset(true);
+  }, []);
+
+  const handleSettlingEnd = React.useCallback(() => {
+    setBlockPositionReset(false);
+  }, []);
 
   // Update measured total height when heights change
   const updateTotalHeight = React.useCallback(() => {
@@ -642,10 +777,14 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
 
   // Reset positions when key order or membership changes (e.g. external reorder)
   React.useEffect(() => {
+    if (blockPositionReset) {
+      return;
+    }
+
     positions.value = Object.fromEntries(
       data.map((item, index) => [keyExtractor(item), index])
     );
-  }, [dataKeySequence, data, keyExtractor, positions]);
+  }, [dataKeySequence, data, keyExtractor, positions, blockPositionReset]);
 
   const handleDragFinalize = () => {
     const newOrder = new Array(data.length);
@@ -701,6 +840,10 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               autoScrollSmoothing={autoScrollSmoothing}
               allKeys={allKeys}
               onHeightMeasured={handleHeightMeasured}
+              swapThreshold={swapThreshold}
+              onDragStart={onDragStart}
+              onSettlingStart={handleSettlingStart}
+              onSettlingEnd={handleSettlingEnd}
               itemSpringConfig={itemSpringConfig}
               dropAnimation={dropAnimation}
               dropTimingConfig={dropTimingConfig}
