@@ -28,12 +28,13 @@ import type { ItemAnimationConfig } from './types';
 // ------------------------------------------------------------------
 // CONFIGURATION
 // ------------------------------------------------------------------
-const AUTO_SCROLL_THRESHOLD = 100;
-const AUTO_SCROLL_MAX_SPEED = 12;
+const AUTO_SCROLL_THRESHOLD = 160;
+const AUTO_SCROLL_MAX_SPEED = 20;
 const AUTO_SCROLL_MIN_SPEED = 1;
-const AUTO_SCROLL_SMOOTHING = 0.15; // Lower = smoother transitions (0-1)
+const AUTO_SCROLL_SMOOTHING = 0.28; // Lower = smoother transitions (0-1)
 const DEFAULT_DRAG_ACTIVATION_DELAY = 200;
 const SWAP_THRESHOLD = 0.5;
+const MAX_SWAPS_PER_UPDATE = 3;
 const DEFAULT_ESTIMATED_ITEM_HEIGHT = 60;
 
 // ------------------------------------------------------------------
@@ -115,6 +116,14 @@ export type NestableDraggableFlatListProps<T> = ItemAnimationConfig & {
   dragActivationDelay?: number;
   /** Fraction of row height required to swap while dragging (default: 0.5) */
   swapThreshold?: number;
+  /** When true, rows matching this predicate cannot be dragged or swapped with */
+  isItemLocked?: (item: T, index: number) => boolean;
+  /** Keep dragged item Y within list content bounds (default: true) */
+  clampDragToBounds?: boolean;
+  /** Clip list overflow while an item is being dragged (default: true) */
+  clipWhileDragging?: boolean;
+  /** Per-item height estimate before onLayout measurement */
+  getEstimatedItemHeight?: (item: T, index: number) => number;
   /** Header component rendered above the list items */
   ListHeaderComponent?: React.ReactNode;
   /** Footer component rendered below the list items */
@@ -132,22 +141,110 @@ export type NestableDraggableFlatListProps<T> = ItemAnimationConfig & {
 // ------------------------------------------------------------------
 // HELPER: Calculate item offset from heights
 // ------------------------------------------------------------------
+function getHeightForKey(
+  key: string | undefined,
+  heights: Record<string, number>,
+  estimatedHeights: Record<string, number>,
+  fallbackEstimated: number
+): number {
+  'worklet';
+  if (!key) {
+    return fallbackEstimated;
+  }
+  return heights[key] ?? estimatedHeights[key] ?? fallbackEstimated;
+}
+
+function isKeyLockedAtPosition(
+  position: number,
+  positions: Record<string, number>,
+  lockedKeys: Record<string, boolean>,
+  allKeys: string[]
+): boolean {
+  'worklet';
+  const keyAtPosition = allKeys.find((k) => positions[k] === position);
+  if (!keyAtPosition) {
+    return false;
+  }
+  return lockedKeys[keyAtPosition] === true;
+}
+
+function findNextUnlockedPosition(
+  from: number,
+  direction: 1 | -1,
+  totalCount: number,
+  positions: Record<string, number>,
+  lockedKeys: Record<string, boolean>,
+  allKeys: string[]
+): number | null {
+  'worklet';
+  let pos = from + direction;
+  while (pos >= 0 && pos < totalCount) {
+    if (!isKeyLockedAtPosition(pos, positions, lockedKeys, allKeys)) {
+      return pos;
+    }
+    pos += direction;
+  }
+  return null;
+}
+
+function resolveDraggableTargetPosition(
+  rawPosition: number,
+  currentPosition: number,
+  positions: Record<string, number>,
+  lockedKeys: Record<string, boolean>,
+  allKeys: string[],
+  totalCount: number
+): number {
+  'worklet';
+  const clampedRaw = Math.max(0, Math.min(rawPosition, totalCount - 1));
+
+  if (!isKeyLockedAtPosition(clampedRaw, positions, lockedKeys, allKeys)) {
+    return clampedRaw;
+  }
+
+  const direction: 1 | -1 = clampedRaw > currentPosition ? 1 : -1;
+  const unlocked = findNextUnlockedPosition(
+    clampedRaw - direction,
+    direction,
+    totalCount,
+    positions,
+    lockedKeys,
+    allKeys
+  );
+  if (unlocked !== null) {
+    return unlocked;
+  }
+
+  const opposite: 1 | -1 = direction === 1 ? -1 : 1;
+  const fallback = findNextUnlockedPosition(
+    clampedRaw,
+    opposite,
+    totalCount,
+    positions,
+    lockedKeys,
+    allKeys
+  );
+  return fallback ?? currentPosition;
+}
+
 function getItemOffset(
   heights: Record<string, number>,
   positions: Record<string, number>,
   targetPosition: number,
   keys: string[],
-  estimatedHeight: number
+  estimatedHeights: Record<string, number>,
+  fallbackEstimated: number
 ): number {
   'worklet';
   let offset = 0;
   for (let i = 0; i < targetPosition; i++) {
     const keyAtPosition = keys.find((k) => positions[k] === i);
-    if (keyAtPosition) {
-      offset += heights[keyAtPosition] ?? estimatedHeight;
-    } else {
-      offset += estimatedHeight;
-    }
+    offset += getHeightForKey(
+      keyAtPosition,
+      heights,
+      estimatedHeights,
+      fallbackEstimated
+    );
   }
   return offset;
 }
@@ -159,15 +256,19 @@ function getPositionAtOffset(
   offset: number,
   keys: string[],
   totalCount: number,
-  estimatedHeight: number
+  estimatedHeights: Record<string, number>,
+  fallbackEstimated: number
 ): number {
   'worklet';
   let cumulative = 0;
   for (let i = 0; i < totalCount; i++) {
     const keyAtPosition = keys.find((k) => positions[k] === i);
-    const height = keyAtPosition
-      ? heights[keyAtPosition] ?? estimatedHeight
-      : estimatedHeight;
+    const height = getHeightForKey(
+      keyAtPosition,
+      heights,
+      estimatedHeights,
+      fallbackEstimated
+    );
     if (offset < cumulative + height) {
       return i;
     }
@@ -176,12 +277,58 @@ function getPositionAtOffset(
   return totalCount - 1;
 }
 
+function getDraggablePositionAtOffset(
+  heights: Record<string, number>,
+  positions: Record<string, number>,
+  offset: number,
+  currentPosition: number,
+  allKeys: string[],
+  totalCount: number,
+  estimatedHeights: Record<string, number>,
+  fallbackEstimated: number,
+  lockedKeys: Record<string, boolean>
+): number {
+  'worklet';
+  const rawPosition = getPositionAtOffset(
+    heights,
+    positions,
+    offset,
+    allKeys,
+    totalCount,
+    estimatedHeights,
+    fallbackEstimated
+  );
+  return resolveDraggableTargetPosition(
+    rawPosition,
+    currentPosition,
+    positions,
+    lockedKeys,
+    allKeys,
+    totalCount
+  );
+}
+
+function clampDragTop(
+  value: number,
+  itemHeight: number,
+  listHeight: number,
+  clampDragToBounds: boolean
+): number {
+  'worklet';
+  if (!clampDragToBounds) {
+    return value;
+  }
+  const maxTop = Math.max(0, listHeight - itemHeight);
+  return Math.min(Math.max(value, 0), maxTop);
+}
+
 function swapOneStepTowardTarget(
   id: string,
   targetPosition: number,
   positions: Record<string, number>,
   allKeys: string[],
-  totalCount: number
+  totalCount: number,
+  lockedKeys: Record<string, boolean>
 ): Record<string, number> {
   'worklet';
   const currentPosition = positions[id] ?? 0;
@@ -191,11 +338,23 @@ function swapOneStepTowardTarget(
     return positions;
   }
 
-  const nextPosition =
-    currentPosition < clampedTarget ? currentPosition + 1 : currentPosition - 1;
+  const direction: 1 | -1 = currentPosition < clampedTarget ? 1 : -1;
+  const nextPosition = findNextUnlockedPosition(
+    currentPosition,
+    direction,
+    totalCount,
+    positions,
+    lockedKeys,
+    allKeys
+  );
+
+  if (nextPosition === null) {
+    return positions;
+  }
+
   const itemToSwapId = allKeys.find((key) => positions[key] === nextPosition);
 
-  if (!itemToSwapId || itemToSwapId === id) {
+  if (!itemToSwapId || itemToSwapId === id || lockedKeys[itemToSwapId]) {
     return positions;
   }
 
@@ -213,43 +372,83 @@ function commitDropPosition(
   positions: Record<string, number>,
   allKeys: string[],
   totalCount: number,
-  fixedItemHeight: number | undefined,
-  estimatedItemHeight: number
+  estimatedHeights: Record<string, number>,
+  fallbackEstimated: number,
+  lockedKeys: Record<string, boolean>
 ): Record<string, number> {
   'worklet';
   const currentItemHeight = getItemHeight(id);
   const draggedCenter = top + currentItemHeight / 2;
-  const targetPosition = getPositionAtOffset(
+  const currentPosition = positions[id] ?? 0;
+  const targetPosition = getDraggablePositionAtOffset(
     heights,
     positions,
     draggedCenter,
+    currentPosition,
     allKeys,
     totalCount,
-    fixedItemHeight ?? estimatedItemHeight
+    estimatedHeights,
+    fallbackEstimated,
+    lockedKeys
   );
+
   const clampedTarget = Math.max(0, Math.min(targetPosition, totalCount - 1));
 
   let nextPositions = positions;
-  let currentPosition = nextPositions[id] ?? 0;
   let guard = 0;
+  let activePosition = nextPositions[id] ?? 0;
 
-  while (currentPosition !== clampedTarget && guard < totalCount) {
+  while (activePosition !== clampedTarget && guard < totalCount) {
     nextPositions = swapOneStepTowardTarget(
       id,
       clampedTarget,
       nextPositions,
       allKeys,
-      totalCount
+      totalCount,
+      lockedKeys
     );
     const updatedPosition = nextPositions[id] ?? 0;
-    if (updatedPosition === currentPosition) {
+    if (updatedPosition === activePosition) {
       break;
     }
-    currentPosition = updatedPosition;
+    activePosition = updatedPosition;
     guard += 1;
   }
 
   return nextPositions;
+}
+
+function buildDenseOrder<T>(
+  data: T[],
+  currentPositions: Record<string, number>,
+  keyExtractor: (item: T) => string
+): T[] {
+  const newOrder: T[] = new Array(data.length);
+  let hasHole = false;
+
+  data.forEach((item) => {
+    const key = keyExtractor(item);
+    const position = currentPositions[key];
+    if (position !== undefined && position >= 0 && position < data.length) {
+      if (newOrder[position] !== undefined) {
+        hasHole = true;
+      } else {
+        newOrder[position] = item;
+      }
+    } else {
+      hasHole = true;
+    }
+  });
+
+  if (!hasHole && newOrder.every((item) => item !== undefined)) {
+    return newOrder;
+  }
+
+  return [...data].sort((a, b) => {
+    const posA = currentPositions[keyExtractor(a)] ?? 0;
+    const posB = currentPositions[keyExtractor(b)] ?? 0;
+    return posA - posB;
+  });
 }
 
 // ------------------------------------------------------------------
@@ -261,6 +460,10 @@ type NestableDraggableItemProps = {
   child: React.ReactNode;
   positions: SharedValue<Record<string, number>>;
   heights: SharedValue<Record<string, number>>;
+  estimatedHeights: SharedValue<Record<string, number>>;
+  lockedKeys: SharedValue<Record<string, boolean>>;
+  activeDragCount: SharedValue<number>;
+  isLocked: boolean;
   scrollY: SharedValue<number>;
   fixedItemHeight: number | undefined;
   estimatedItemHeight: number;
@@ -269,6 +472,8 @@ type NestableDraggableItemProps = {
   containerHeight: SharedValue<number>;
   containerTop: SharedValue<number>;
   contentHeight: SharedValue<number>;
+  listHeight: SharedValue<number>;
+  clampDragToBounds: boolean;
   scrollViewRef: AnimatedRef<any>;
   dragActivationDelay: number;
   outerScrollEnabled: SharedValue<boolean>;
@@ -282,6 +487,7 @@ type NestableDraggableItemProps = {
   onDragStart?: (info: { key: string; index: number }) => void;
   onSettlingStart?: () => void;
   onSettlingEnd?: () => void;
+  onDragActiveChange?: (active: boolean) => void;
 } & ItemAnimationConfig;
 
 const NestableDraggableItem = ({
@@ -290,6 +496,10 @@ const NestableDraggableItem = ({
   child,
   positions,
   heights,
+  estimatedHeights,
+  lockedKeys,
+  activeDragCount,
+  isLocked,
   scrollY,
   fixedItemHeight,
   estimatedItemHeight,
@@ -298,6 +508,8 @@ const NestableDraggableItem = ({
   containerHeight,
   containerTop,
   contentHeight,
+  listHeight,
+  clampDragToBounds,
   scrollViewRef,
   dragActivationDelay,
   outerScrollEnabled,
@@ -311,6 +523,7 @@ const NestableDraggableItem = ({
   onDragStart,
   onSettlingStart,
   onSettlingEnd,
+  onDragActiveChange,
   itemSpringConfig = DEFAULT_ITEM_SPRING,
   dropAnimation = 'timing',
   dropTimingConfig = DEFAULT_DROP_TIMING,
@@ -360,7 +573,12 @@ const NestableDraggableItem = ({
     if (fixedItemHeight !== undefined) {
       return fixedItemHeight;
     }
-    return heights.value[itemId] ?? estimatedItemHeight;
+    return getHeightForKey(
+      itemId,
+      heights.value,
+      estimatedHeights.value,
+      estimatedItemHeight
+    );
   };
 
   // Calculate offset for a position
@@ -374,21 +592,70 @@ const NestableDraggableItem = ({
       positions.value,
       position,
       allKeys,
+      estimatedHeights.value,
       estimatedItemHeight
     );
   };
 
-  // Sync position with index on mount and when not actively dragging
+  const applyPositionToTop = (
+    position: number,
+    previousPosition: number | undefined,
+    animate: boolean
+  ) => {
+    'worklet';
+    const targetOffset = calculateOffset(position);
+    const positionChanged =
+      previousPosition !== undefined && position !== previousPosition;
+
+    if (isDragging.value) {
+      return;
+    }
+
+    if (isSettling.value) {
+      return;
+    }
+
+    if (activeDragCount.value > 0) {
+      top.value = targetOffset;
+      return;
+    }
+
+    if (positionChanged && animate) {
+      top.value = withSpring(targetOffset, itemSpringConfig);
+      return;
+    }
+
+    top.value = targetOffset;
+  };
+
+  // Sync top when slot, neighbor layout, or measured heights change
   useAnimatedReaction(
     () => ({
       pos: positions.value[id],
       h: heights.value,
+      dragCount: activeDragCount.value,
+      positions: positions.value,
     }),
-    (current) => {
-      if (!isDragging.value && !isSettling.value && current.pos !== undefined) {
-        const targetOffset = calculateOffset(current.pos);
-        top.value = targetOffset;
+    (current, previous) => {
+      if (current.pos === undefined) {
+        return;
       }
+      const previousPos = previous?.pos;
+      const positionChanged =
+        previousPos !== undefined && current.pos !== previousPos;
+      const layoutChanged =
+        previous?.positions !== undefined &&
+        current.positions !== previous.positions;
+
+      // Locked headers (and other rows whose slot index is unchanged) still
+      // need Y updates when neighbors swap, because offset is cumulative.
+      if (current.dragCount > 0 && layoutChanged && !isDragging.value) {
+        top.value = calculateOffset(current.pos);
+        return;
+      }
+
+      const shouldAnimate = positionChanged && current.dragCount === 0;
+      applyPositionToTop(current.pos, previousPos, shouldAnimate);
     },
     [id, allKeys, fixedItemHeight, estimatedItemHeight]
   );
@@ -475,13 +742,23 @@ const NestableDraggableItem = ({
       // Update the dragged item position to account for scroll
       const deltaY = currentFingerY.value - startY.value;
       const deltaScroll = newScroll - startScrollY.value;
-      top.value = startTop.value + deltaY + deltaScroll;
+      const rawTop = startTop.value + deltaY + deltaScroll;
+      top.value = clampDragTop(
+        rawTop,
+        getItemHeight(id),
+        listHeight.value,
+        clampDragToBounds
+      );
     }
   });
 
   const pan = Gesture.Pan()
+    .enabled(!isLocked)
     .activateAfterLongPress(dragActivationDelay)
     .onStart((e: { absoluteY: number }) => {
+      if (lockedKeys.value[id]) {
+        return;
+      }
       // Only set isDragging when gesture actually activates (after long press)
       isDragging.value = true;
       isSettling.value = false;
@@ -489,6 +766,10 @@ const NestableDraggableItem = ({
       currentScrollVelocity.value = 0;
       // Disable outer scroll while dragging
       outerScrollEnabled.value = false;
+
+      if (onDragActiveChange) {
+        runOnJS(onDragActiveChange)(true);
+      }
 
       // Re-measure container position at drag start for accurate auto-scroll
       // This is crucial for BottomSheet scenarios where the container position
@@ -516,7 +797,13 @@ const NestableDraggableItem = ({
 
       const deltaY = e.absoluteY - startY.value;
       const deltaScroll = scrollY.value - startScrollY.value;
-      top.value = startTop.value + deltaY + deltaScroll;
+      const rawTop = startTop.value + deltaY + deltaScroll;
+      top.value = clampDragTop(
+        rawTop,
+        getItemHeight(id),
+        listHeight.value,
+        clampDragToBounds
+      );
 
       const currentPosition = positions.value[id] ?? 0;
       const currentItemHeight = getItemHeight(id);
@@ -527,15 +814,17 @@ const NestableDraggableItem = ({
       const thresholdDistance = currentItemHeight * swapThreshold;
 
       if (Math.abs(displacement) > thresholdDistance) {
-        // Find the position at the center of the dragged item
         const draggedCenter = top.value + currentItemHeight / 2;
-        const targetPosition = getPositionAtOffset(
+        const targetPosition = getDraggablePositionAtOffset(
           heights.value,
           positions.value,
           draggedCenter,
+          currentPosition,
           allKeys,
           totalCount,
-          fixedItemHeight ?? estimatedItemHeight
+          estimatedHeights.value,
+          estimatedItemHeight,
+          lockedKeys.value
         );
 
         const clampedTargetPosition = Math.max(
@@ -543,16 +832,36 @@ const NestableDraggableItem = ({
           Math.min(targetPosition, totalCount - 1)
         );
 
-        if (clampedTargetPosition !== currentPosition) {
-          const itemToSwapId = allKeys.find(
-            (key) => positions.value[key] === clampedTargetPosition
-          );
+        let activePosition = currentPosition;
+        let swapGuard = 0;
 
-          if (itemToSwapId && itemToSwapId !== id) {
-            const newPositions = { ...positions.value };
-            newPositions[id] = clampedTargetPosition;
-            newPositions[itemToSwapId] = currentPosition;
-            positions.value = newPositions;
+        while (
+          swapGuard < MAX_SWAPS_PER_UPDATE &&
+          clampedTargetPosition !== activePosition
+        ) {
+          const nextPositions = swapOneStepTowardTarget(
+            id,
+            clampedTargetPosition,
+            positions.value,
+            allKeys,
+            totalCount,
+            lockedKeys.value
+          );
+          const updatedPosition = nextPositions[id] ?? 0;
+
+          if (updatedPosition === activePosition) {
+            break;
+          }
+
+          positions.value = nextPositions;
+          activePosition = updatedPosition;
+          swapGuard += 1;
+
+          const newOffset = calculateOffset(activePosition);
+          const newDisplacement = top.value - newOffset;
+
+          if (Math.abs(newDisplacement) <= thresholdDistance) {
+            break;
           }
         }
       }
@@ -574,8 +883,9 @@ const NestableDraggableItem = ({
         positions.value,
         allKeys,
         totalCount,
-        fixedItemHeight,
-        estimatedItemHeight
+        estimatedHeights.value,
+        estimatedItemHeight,
+        lockedKeys.value
       );
 
       // Mark as settling before starting animation
@@ -583,6 +893,10 @@ const NestableDraggableItem = ({
       isDragging.value = false;
       // Reset scroll velocity
       currentScrollVelocity.value = 0;
+
+      if (onDragActiveChange) {
+        runOnJS(onDragActiveChange)(false);
+      }
 
       if (onSettlingStart) {
         runOnJS(onSettlingStart)();
@@ -607,27 +921,6 @@ const NestableDraggableItem = ({
       // Re-enable outer scroll
       outerScrollEnabled.value = true;
     });
-
-  // React to position changes from other items swapping
-  useAnimatedReaction(
-    () => positions.value[id],
-    (currentPosition, previousPosition) => {
-      // Only animate if:
-      // - Position actually changed
-      // - Not currently dragging this item
-      // - Not settling from a drag
-      // - Position is defined
-      if (
-        currentPosition !== previousPosition &&
-        !isDragging.value &&
-        !isSettling.value &&
-        currentPosition !== undefined
-      ) {
-        const targetOffset = calculateOffset(currentPosition);
-        top.value = withSpring(targetOffset, itemSpringConfig);
-      }
-    }
-  );
 
   const animatedStyle = useAnimatedStyle(() => {
     return {
@@ -655,7 +948,7 @@ const NestableDraggableItem = ({
   );
 
   return (
-    <GestureDetector gesture={pan}>
+    <GestureDetector gesture={isLocked ? Gesture.Native() : pan}>
       <Animated.View
         onLayout={handleLayout}
         style={[
@@ -685,6 +978,10 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
   contentContainerStyle,
   dragActivationDelay = DEFAULT_DRAG_ACTIVATION_DELAY,
   swapThreshold = SWAP_THRESHOLD,
+  isItemLocked,
+  clampDragToBounds = true,
+  clipWhileDragging = true,
+  getEstimatedItemHeight,
   ListHeaderComponent,
   ListFooterComponent,
   autoScrollThreshold = AUTO_SCROLL_THRESHOLD,
@@ -712,6 +1009,39 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
     [data, keyExtractor]
   );
 
+  const lockedKeysMap = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    data.forEach((item, index) => {
+      const key = keyExtractor(item);
+      map[key] = isItemLocked?.(item, index) ?? false;
+    });
+    return map;
+  }, [data, isItemLocked, keyExtractor]);
+
+  const lockedKeys = useSharedValue<Record<string, boolean>>(lockedKeysMap);
+
+  const estimatedHeightsMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    data.forEach((item, index) => {
+      const key = keyExtractor(item);
+      map[key] = getEstimatedItemHeight?.(item, index) ?? estimatedItemHeight;
+    });
+    return map;
+  }, [data, estimatedItemHeight, getEstimatedItemHeight, keyExtractor]);
+
+  const estimatedHeights =
+    useSharedValue<Record<string, number>>(estimatedHeightsMap);
+
+  const activeDragCount = useSharedValue(0);
+
+  React.useEffect(() => {
+    lockedKeys.value = lockedKeysMap;
+  }, [lockedKeys, lockedKeysMap]);
+
+  React.useEffect(() => {
+    estimatedHeights.value = estimatedHeightsMap;
+  }, [estimatedHeights, estimatedHeightsMap]);
+
   const positions = useSharedValue<Record<string, number>>(
     Object.fromEntries(data.map((item, index) => [keyExtractor(item), index]))
   );
@@ -729,15 +1059,42 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
     if (fixedItemHeight !== undefined) {
       return data.length * fixedItemHeight;
     }
-    // For dynamic heights, use estimated height initially
-    // The actual height will be updated as items are measured
-    return data.length * estimatedItemHeight;
-  }, [data.length, fixedItemHeight, estimatedItemHeight]);
+    return data.reduce(
+      (total, item, index) =>
+        total + (getEstimatedItemHeight?.(item, index) ?? estimatedItemHeight),
+      0
+    );
+  }, [data, fixedItemHeight, estimatedItemHeight, getEstimatedItemHeight]);
 
   // Track measured total height for dynamic lists
   const [measuredTotalHeight, setMeasuredTotalHeight] =
     React.useState(listContentHeight);
   const [blockPositionReset, setBlockPositionReset] = React.useState(false);
+  const [isDraggingActive, setIsDraggingActive] = React.useState(false);
+  const activeDragCountRef = React.useRef(0);
+
+  const listHeight = useSharedValue(listContentHeight);
+
+  React.useEffect(() => {
+    listHeight.value = measuredTotalHeight;
+  }, [listHeight, measuredTotalHeight]);
+
+  const handleDragActiveChange = React.useCallback(
+    (active: boolean) => {
+      if (active) {
+        activeDragCount.value += 1;
+        activeDragCountRef.current += 1;
+        setIsDraggingActive(true);
+        return;
+      }
+      activeDragCount.value = Math.max(0, activeDragCount.value - 1);
+      activeDragCountRef.current = Math.max(0, activeDragCountRef.current - 1);
+      if (activeDragCountRef.current === 0) {
+        setIsDraggingActive(false);
+      }
+    },
+    [activeDragCount]
+  );
 
   const handleSettlingStart = React.useCallback(() => {
     setBlockPositionReset(true);
@@ -754,10 +1111,17 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
     const currentHeights = heights.value;
     let total = 0;
     for (const key of allKeys) {
-      total += currentHeights[key] ?? estimatedItemHeight;
+      total +=
+        currentHeights[key] ?? estimatedHeightsMap[key] ?? estimatedItemHeight;
     }
     setMeasuredTotalHeight(total);
-  }, [allKeys, estimatedItemHeight, fixedItemHeight, heights]);
+  }, [
+    allKeys,
+    estimatedHeightsMap,
+    estimatedItemHeight,
+    fixedItemHeight,
+    heights,
+  ]);
 
   // Handle height measurement from items
   const handleHeightMeasured = React.useCallback(
@@ -787,22 +1151,15 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
   }, [dataKeySequence, data, keyExtractor, positions, blockPositionReset]);
 
   const handleDragFinalize = () => {
-    const newOrder = new Array(data.length);
     const currentPositions = positions.value;
-
-    data.forEach((item) => {
-      const key = keyExtractor(item);
-      const position = currentPositions[key];
-      if (position !== undefined) {
-        newOrder[position] = item;
-      }
-    });
-
-    onDragEnd(newOrder);
+    onDragEnd(buildDenseOrder(data, currentPositions, keyExtractor));
   };
 
   const actualHeight =
     fixedItemHeight !== undefined ? listContentHeight : measuredTotalHeight;
+
+  const listOverflowStyle =
+    clipWhileDragging && isDraggingActive ? styles.listClip : undefined;
 
   return (
     <View style={style}>
@@ -810,12 +1167,14 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
       <View
         style={[
           styles.listContainer,
+          listOverflowStyle,
           contentContainerStyle,
           { height: actualHeight },
         ]}
       >
         {data.map((item, index) => {
           const key = keyExtractor(item);
+          const isLocked = lockedKeysMap[key] ?? false;
           return (
             <NestableDraggableItem
               key={key}
@@ -823,6 +1182,10 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               index={index}
               positions={positions}
               heights={heights}
+              estimatedHeights={estimatedHeights}
+              lockedKeys={lockedKeys}
+              activeDragCount={activeDragCount}
+              isLocked={isLocked}
               scrollY={scrollY}
               fixedItemHeight={fixedItemHeight}
               estimatedItemHeight={estimatedItemHeight}
@@ -831,6 +1194,8 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               containerHeight={containerHeight}
               containerTop={containerTop}
               contentHeight={contentHeight}
+              listHeight={listHeight}
+              clampDragToBounds={clampDragToBounds}
               scrollViewRef={scrollViewRef}
               dragActivationDelay={dragActivationDelay}
               outerScrollEnabled={outerScrollEnabled}
@@ -844,6 +1209,7 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
               onDragStart={onDragStart}
               onSettlingStart={handleSettlingStart}
               onSettlingEnd={handleSettlingEnd}
+              onDragActiveChange={handleDragActiveChange}
               itemSpringConfig={itemSpringConfig}
               dropAnimation={dropAnimation}
               dropTimingConfig={dropTimingConfig}
@@ -867,6 +1233,9 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
 const styles = StyleSheet.create({
   listContainer: {
     position: 'relative',
+  },
+  listClip: {
+    overflow: 'hidden',
   },
   itemContainer: {
     position: 'absolute',

@@ -302,6 +302,11 @@ function MyComponent() {
 | `style` | `ViewStyle` | ❌ | - | Style for the list container |
 | `contentContainerStyle` | `ViewStyle` | ❌ | - | Style for the content container |
 | `dragActivationDelay` | `number` | ❌ | `200` | Milliseconds to hold before drag activates |
+| `swapThreshold` | `number` | ❌ | `0.5` | Fraction of row height required to swap while dragging |
+| `isItemLocked` | `(item: T, index: number) => boolean` | ❌ | - | Rows matching this predicate cannot be dragged or swapped with |
+| `clampDragToBounds` | `boolean` | ❌ | `true` | Keep dragged item Y within list content height |
+| `clipWhileDragging` | `boolean` | ❌ | `true` | Apply `overflow: 'hidden'` on the list while dragging |
+| `getEstimatedItemHeight` | `(item: T, index: number) => number` | ❌ | - | Per-item height estimate before `onLayout` (use when row heights vary) |
 | `ListHeaderComponent` | `ReactNode` | ❌ | - | Component rendered above list items |
 | `ListFooterComponent` | `ReactNode` | ❌ | - | Component rendered below list items |
 | `autoScrollThreshold` | `number` | ❌ | `100` | Distance from edge (in px) to trigger auto-scroll |

@@ -9,6 +9,7 @@ import Animated, {
   useSharedValue,
   useAnimatedRef,
   useAnimatedScrollHandler,
+  useAnimatedProps,
   measure,
   runOnJS,
   runOnUI,
@@ -49,6 +50,7 @@ export const NestableScrollContainer = forwardRef<
     onLayout: onLayoutProp,
     onContentSizeChange: onContentSizeChangeProp,
     measureKey,
+    scrollEnabled: scrollEnabledProp = true,
     ...scrollViewProps
   },
   ref
@@ -58,6 +60,7 @@ export const NestableScrollContainer = forwardRef<
   const containerTop = useSharedValue(0);
   const contentHeight = useSharedValue(0);
   const outerScrollEnabled = useSharedValue(true);
+  const userScrollEnabled = useSharedValue(scrollEnabledProp !== false);
   const scrollViewRef = useAnimatedRef<any>();
 
   // Track whether callbacks exist using shared values (accessible in worklets)
@@ -82,6 +85,14 @@ export const NestableScrollContainer = forwardRef<
     hasOnScrollEndDragProp,
     hasOnMomentumScrollEndProp,
   ]);
+
+  useEffect(() => {
+    userScrollEnabled.value = scrollEnabledProp !== false;
+  }, [scrollEnabledProp, userScrollEnabled]);
+
+  const animatedScrollProps = useAnimatedProps(() => ({
+    scrollEnabled: userScrollEnabled.value && outerScrollEnabled.value,
+  }));
 
   // Forward the internal ref to the external ref
   useImperativeHandle(ref, () => scrollViewRef.current, [scrollViewRef]);
@@ -202,11 +213,11 @@ export const NestableScrollContainer = forwardRef<
     >
       <AnimatedScrollView
         ref={scrollViewRef}
+        animatedProps={animatedScrollProps}
         onScroll={scrollHandler}
         onLayout={handleLayout}
         onContentSizeChange={handleContentSizeChange}
         scrollEventThrottle={16}
-        scrollEnabled={true}
         {...scrollViewProps}
       >
         {children}

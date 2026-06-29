@@ -1,13 +1,14 @@
 {
   "name": "react-native-reanimated-drag-list",
-  "version": "0.8.0",
+  "version": "0.10.6",
   "description": "High performance draggable list for Fabric using Reanimated 4",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
     ".": {
-      "source": "./src/index.tsx",
       "types": "./lib/typescript/src/index.d.ts",
+      "react-native": "./lib/module/index.js",
+      "import": "./lib/module/index.js",
       "default": "./lib/module/index.js"
     },
     "./package.json": "./package.json"
