@@ -1,3 +1,4 @@
+import React from 'react';
 import { StyleSheet } from 'react-native';
 import Animated, {
   useAnimatedReaction,
@@ -47,7 +48,9 @@ export const DraggableItem = ({
   // Track when item is settling to final position (prevents reaction interference)
   const isSettling = useSharedValue(false);
   // Use index prop for initial value to avoid reading shared value during render
-  const top = useSharedValue(index * itemHeight);
+  const slotTop = useSharedValue(index * itemHeight);
+  const dragTranslateY = useSharedValue(0);
+  const scale = useSharedValue(1);
 
   // Track initial positions when drag starts
   const startY = useSharedValue(0);
@@ -64,11 +67,17 @@ export const DraggableItem = ({
     () => index,
     (currentIndex) => {
       if (!isDragging.value && !isSettling.value) {
-        top.value = currentIndex * itemHeight;
+        dragTranslateY.value = 0;
+        slotTop.value = currentIndex * itemHeight;
       }
     },
     [index, itemHeight]
   );
+
+  const getAbsoluteTop = () => {
+    'worklet';
+    return slotTop.value + dragTranslateY.value;
+  };
 
   // Calculate progressive scroll speed with exponential curve
   // Closer to edge = faster scroll (exponential ramp up)
@@ -88,8 +97,7 @@ export const DraggableItem = ({
     );
   };
 
-  // Continuous auto-scroll using frame callback
-  useFrameCallback(() => {
+  const autoScrollFrame = useFrameCallback(() => {
     if (!isDragging.value) return;
 
     // Calculate finger position relative to the container (not the screen)
@@ -137,9 +145,18 @@ export const DraggableItem = ({
       // Update item position to follow the auto-scroll
       const deltaY = currentFingerY.value - startY.value;
       const deltaScroll = newScroll - startScrollY.value;
-      top.value = startTop.value + deltaY + deltaScroll;
+      const rawTop = startTop.value + deltaY + deltaScroll;
+      dragTranslateY.value = rawTop - slotTop.value;
     }
-  });
+  }, false);
+
+  const startAutoScroll = React.useCallback(() => {
+    autoScrollFrame.setActive(true);
+  }, [autoScrollFrame]);
+
+  const stopAutoScroll = React.useCallback(() => {
+    autoScrollFrame.setActive(false);
+  }, [autoScrollFrame]);
 
   // Drag activates after holding for the specified delay, allowing scroll otherwise
   const pan = Gesture.Pan()
@@ -148,7 +165,10 @@ export const DraggableItem = ({
       // Only set isDragging when gesture actually activates (after long press)
       isDragging.value = true;
       isSettling.value = false;
+      scale.value = withSpring(activeScale, itemSpringConfig);
       movementDirection.value = 0;
+
+      runOnJS(startAutoScroll)();
 
       // Capture initial positions when drag becomes active
       startY.value = e.absoluteY;
@@ -157,8 +177,8 @@ export const DraggableItem = ({
       previousFingerY.value = e.absoluteY;
       const currentIndex = positions.value[id] ?? 0;
       startTop.value = currentIndex * itemHeight;
-      // Ensure we start from the correct position
-      top.value = startTop.value;
+      slotTop.value = startTop.value;
+      dragTranslateY.value = 0;
     })
     .onUpdate((e: { absoluteY: number }) => {
       // Calculate movement direction based on finger movement
@@ -178,12 +198,14 @@ export const DraggableItem = ({
       // Calculate position based on movement from start position
       const deltaY = e.absoluteY - startY.value;
       const deltaScroll = scrollY.value - startScrollY.value;
-      top.value = startTop.value + deltaY + deltaScroll;
+      const rawTop = startTop.value + deltaY + deltaScroll;
+      dragTranslateY.value = rawTop - slotTop.value;
 
       // Calculate displacement from current position to determine swap
       const currentIndex = positions.value[id] ?? 0;
       const currentTop = currentIndex * itemHeight;
-      const displacement = top.value - currentTop;
+      const absoluteTop = getAbsoluteTop();
+      const displacement = absoluteTop - currentTop;
       const thresholdDistance = itemHeight * SWAP_THRESHOLD;
 
       // Only swap if we've moved past the threshold
@@ -219,6 +241,9 @@ export const DraggableItem = ({
       // Mark as settling before starting animation
       isSettling.value = true;
       isDragging.value = false;
+      scale.value = withSpring(1, itemSpringConfig);
+
+      runOnJS(stopAutoScroll)();
 
       const targetIndex = positions.value[id] ?? 0;
       const finalTop = targetIndex * itemHeight;
@@ -232,9 +257,11 @@ export const DraggableItem = ({
       };
 
       if (dropAnimation === 'spring') {
-        top.value = withSpring(finalTop, dropSpringConfig, onDropFinished);
+        dragTranslateY.value = withSpring(0, dropSpringConfig);
+        slotTop.value = withSpring(finalTop, dropSpringConfig, onDropFinished);
       } else {
-        top.value = withTiming(finalTop, dropTimingConfig, onDropFinished);
+        dragTranslateY.value = withTiming(0, dropTimingConfig);
+        slotTop.value = withTiming(finalTop, dropTimingConfig, onDropFinished);
       }
     });
 
@@ -253,22 +280,20 @@ export const DraggableItem = ({
         !isSettling.value &&
         currentPosition !== undefined
       ) {
-        top.value = withSpring(currentPosition * itemHeight, itemSpringConfig);
+        dragTranslateY.value = 0;
+        slotTop.value = withSpring(
+          currentPosition * itemHeight,
+          itemSpringConfig
+        );
       }
     }
   );
 
   const animatedStyle = useAnimatedStyle(() => {
     return {
-      top: top.value,
+      top: slotTop.value,
       zIndex: isDragging.value ? 9999 : isSettling.value ? 9998 : 1,
-      transform: [
-        {
-          scale: isDragging.value
-            ? activeScale
-            : withSpring(1, itemSpringConfig),
-        },
-      ],
+      transform: [{ translateY: dragTranslateY.value }, { scale: scale.value }],
     };
   });
 
