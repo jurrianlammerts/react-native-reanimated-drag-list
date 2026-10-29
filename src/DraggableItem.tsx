@@ -70,8 +70,7 @@ export const DraggableItem = ({
         dragTranslateY.value = 0;
         slotTop.value = currentIndex * itemHeight;
       }
-    },
-    [index, itemHeight]
+    }
   );
 
   const getAbsoluteTop = () => {

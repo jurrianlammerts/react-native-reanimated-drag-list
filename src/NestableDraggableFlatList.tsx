@@ -707,8 +707,7 @@ const NestableDraggableItem = ({
       }
       dragTranslateY.value = 0;
       slotTop.value = calculateOffset(effectivePos);
-    },
-    [id, index, allKeys, fixedItemHeight, estimatedItemHeight]
+    }
   );
 
   // Sync top when slot, neighbor layout, or measured heights change
@@ -749,8 +748,7 @@ const NestableDraggableItem = ({
 
       const shouldAnimate = false;
       applyPositionToTop(current.pos, previousPos, shouldAnimate);
-    },
-    [id, allKeys, fixedItemHeight, estimatedItemHeight]
+    }
   );
 
   // Calculate target scroll speed using smooth easing
@@ -1553,7 +1551,7 @@ export function NestableDraggableFlatList<T extends { id?: string | number }>({
       return { height: listContentHeight };
     }
     return { height: measuredTotalHeightSV.value };
-  }, [fixedItemHeight, listContentHeight]);
+  });
 
   const listOverflowStyle =
     clipWhileDragging && isDraggingActive ? styles.listClip : undefined;
